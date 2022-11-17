@@ -1,7 +1,12 @@
 import argparse
 import csv
+
+import numpy as np
 import torch
 import torch.nn.functional as F
+from torch import nn
+from torch.nn import Linear, ReLU
+
 from networks import get_network, get_net_name, NormalizedResnet
 
 
@@ -48,8 +53,56 @@ def get_net(net, net_name):
     return net
 
 
+def backtrack(abstract_lower, abstract_upper, inputs, eps):
+    direct_lbs, direct_ubs = abstract_lower[-1], abstract_upper[-1]
+    for prev_abs_lbs, prev_abs_ubs in reversed(zip(abstract_lower, abstract_upper)[:-1]):
+        # Messing up the biases (both here and in loop below), so will have to deal with that somehow,
+        # one option being to consider keeping biases separate (so that list is of tuples of array and matrix)
+        next_direct_lbs = np.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
+        next_direct_ubs = np.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
+        for i in range(len(direct_lbs)):
+            for j in range(direct_lbs.shape[1]):
+                next_direct_lbs[i,:] += direct_lbs[i,j] @ (prev_abs_lbs if direct_lbs[i,j] > 0 else prev_abs_ubs)[j,:]
+                next_direct_ubs[i,:] += direct_ubs[i,j] @ (prev_abs_lbs if direct_ubs[i,j] < 0 else prev_abs_ubs)[j,:]
+        direct_lbs, direct_ubs = next_direct_lbs, next_direct_ubs
+    return [],[]
+
+
 def analyze(net, inputs, eps, true_label):
-    return 0
+    num_categories = len(net.layers[-1].out_features)
+    comparison_layer = Linear(num_categories, num_categories)
+    comparison_layer.weight = np.delete(np.repeat(
+        ((np.arange(num_categories) == true_label)+0).reshape((1, -1)), num_categories, axis=0
+    ) - np.eye(num_categories), true_label, axis=0)
+    net = nn.Sequential(net, comparison_layer)
+    alpha = []
+    abstract_lower = []
+    abstract_upper = []
+    for k, layer in enumerate(net.layers):
+        alpha.append(torch.Tensor(np.rand(len(layer))))
+        if type(layer) == Linear:
+            coefficients = torch.hstack((layer.bias.detach().reshape(-1, 1), layer.weight.detach())).numpy()
+            abstract_lower.append(coefficients)
+            abstract_upper.append(coefficients)
+        if type(layer) == ReLU:
+            prev_lbs, prev_ubs = backtrack(abstract_lower, abstract_upper, inputs, eps)
+            curr_abstract_lower = []
+            curr_abstract_upper = []
+            for i, prev_lb, prev_ub in enumerate(zip(prev_lbs, prev_ubs)):
+                if prev_ub <= 0:
+                    shared_coefficients = np.zeros(len(layer))
+                    curr_abstract_lower.append(shared_coefficients)
+                    curr_abstract_upper.append(shared_coefficients)
+                elif prev_lb >= 0:
+                    shared_coefficients = (np.arange(len(layer)+1) == i+1)+0
+                    curr_abstract_lower.append(shared_coefficients)
+                    curr_abstract_upper.append(shared_coefficients)
+                else:
+                    upper_slope = prev_ub / (prev_ub - prev_lb)
+                    curr_abstract_lower.append(alpha[-1] * abstract_lower[-1])
+                    curr_abstract_upper.append(upper_slope * (abstract_upper[-1] - prev_lb))
+    final_lbs, _ = backtrack(abstract_lower, abstract_upper, inputs, eps)
+    return all([final_lb >= 0 for final_lb in final_lbs])
 
 
 def main():
