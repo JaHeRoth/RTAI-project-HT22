@@ -69,6 +69,7 @@ def backtrack(abstract_lower, abstract_upper, inputs, eps):
 
 
 def analyze(net, inputs, eps, true_label):
+    # TODO: Probably need a switching logic to handle different types of networks?
     num_categories = len(net.layers[-1].out_features)
     comparison_layer = Linear(num_categories, num_categories)
     comparison_layer.weight = np.delete(np.repeat(

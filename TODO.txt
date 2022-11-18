@@ -1,0 +1,7 @@
+Open questions:
+- Do we need to encode all the different operations by hand? -> Affine, ReLU, Conv, Pooling etc.
+- Can we find optimal alpha (DeepPoly slope) values per node by a similar analysis as seen in Exercise 3, Task 5?
+- I expect we need to learn good splitting behaviour on the different networks as well for good verification results? (As seen in Ex.4 & lecture)
+-- This will make our Relu approximation more precise, but branching on all nodes will probably be infeasible?
+- Shall we use MILP solvers? Will they be too slow?
+- Is it fruitful to run iterative tests on the cases to prove them? First just Box/DeepPoly, on a failed verification with some branching/different alphas?
