@@ -56,16 +56,22 @@ def get_net(net, net_name):
 def backtrack(abstract_lower, abstract_upper, inputs, eps):
     direct_lbs, direct_ubs = abstract_lower[-1], abstract_upper[-1]
     for prev_abs_lbs, prev_abs_ubs in reversed(zip(abstract_lower, abstract_upper)[:-1]):
-        # Messing up the biases (both here and in loop below), so will have to deal with that somehow,
-        # one option being to consider keeping biases separate (so that list is of tuples of array and matrix)
         next_direct_lbs = np.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
         next_direct_ubs = np.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
         for i in range(len(direct_lbs)):
             for j in range(direct_lbs.shape[1]):
-                next_direct_lbs[i,:] += direct_lbs[i,j] @ (prev_abs_lbs if direct_lbs[i,j] > 0 else prev_abs_ubs)[j,:]
-                next_direct_ubs[i,:] += direct_ubs[i,j] @ (prev_abs_lbs if direct_ubs[i,j] < 0 else prev_abs_ubs)[j,:]
+                next_direct_lbs[i,:] += direct_lbs[i,j+1] * (prev_abs_lbs if direct_lbs[i,j+1] > 0 else prev_abs_ubs)[j,:]
+                next_direct_ubs[i,:] += direct_ubs[i,j+1] * (prev_abs_lbs if direct_ubs[i,j+1] < 0 else prev_abs_ubs)[j,:]
+        next_direct_lbs[:,0] += direct_lbs[:,0]
+        next_direct_ubs[:, 0] += direct_ubs[:, 0]
         direct_lbs, direct_ubs = next_direct_lbs, next_direct_ubs
-    return [],[]
+    concrete_lbs = direct_lbs[:,0]
+    concrete_ubs = direct_ubs[:, 0]
+    for i in range(len(direct_lbs)):
+        # Shows how we can get rid of inner loop above (using indicator functions)
+        concrete_lbs += direct_lbs[:,1:] @ ((inputs-eps) * (direct_lbs[i,1:] >= 0) + (inputs+eps) * ((direct_lbs[i,1:] >= 0)))
+        concrete_ubs += direct_lbs[:, 1:] @ ((inputs - eps) * (direct_lbs[i, 1:] >= 0) + (inputs + eps) * ((direct_lbs[i, 1:] >= 0)))
+    return concrete_lbs,concrete_ubs
 
 
 def analyze(net, inputs, eps, true_label):
