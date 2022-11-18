@@ -59,7 +59,7 @@ def backtrack(abstract_lower, abstract_upper, inputs, eps):
         next_direct_lbs = np.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
         next_direct_ubs = np.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
         for i in range(len(direct_lbs)):
-            for j in range(direct_lbs.shape[1]):
+            for j in range(direct_lbs.shape[1]-1):
                 next_direct_lbs[i,:] += direct_lbs[i,j+1] * (prev_abs_lbs if direct_lbs[i,j+1] > 0 else prev_abs_ubs)[j,:]
                 next_direct_ubs[i,:] += direct_ubs[i,j+1] * (prev_abs_lbs if direct_ubs[i,j+1] < 0 else prev_abs_ubs)[j,:]
         next_direct_lbs[:,0] += direct_lbs[:,0]
@@ -69,8 +69,8 @@ def backtrack(abstract_lower, abstract_upper, inputs, eps):
     concrete_ubs = direct_ubs[:, 0]
     for i in range(len(direct_lbs)):
         # Shows how we can get rid of inner loop above (using indicator functions)
-        concrete_lbs += direct_lbs[:,1:] @ ((inputs-eps) * (direct_lbs[i,1:] >= 0) + (inputs+eps) * ((direct_lbs[i,1:] >= 0)))
-        concrete_ubs += direct_lbs[:, 1:] @ ((inputs - eps) * (direct_lbs[i, 1:] >= 0) + (inputs + eps) * ((direct_lbs[i, 1:] >= 0)))
+        concrete_lbs += direct_lbs[:,1:] @ ((inputs-eps) * (direct_lbs[i,1:] >= 0) + (inputs+eps) * ((direct_lbs[i,1:] < 0)))
+        concrete_ubs += direct_ubs[:, 1:] @ ((inputs + eps) * (direct_ubs[i, 1:] >= 0) + (inputs - eps) * ((direct_ubs[i, 1:] < 0)))
     return concrete_lbs,concrete_ubs
 
 
