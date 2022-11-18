@@ -1,0 +1,18 @@
+Open questions:
+- Do we need to encode all the different operations by hand? -> Affine, ReLU, Conv, Pooling etc.
+- Can we find optimal alpha (DeepPoly slope) values per node by a similar analysis as seen in Exercise 3, Task 5?
+- I expect we need to learn good splitting behaviour on the different networks as well for good verification results? (As seen in Ex.4 & lecture)
+-- This will make our Relu approximation more precise, but branching on all nodes will probably be infeasible?
+- Shall we use MILP solvers? Will they be too slow? -> Prob no, since different from DeepPoly
+- Is it fruitful to run iterative tests on the cases to prove them? First just Box/DeepPoly, on a failed verification with some branching/different alphas?
+
+ToDo:
+1. Look at PyTorch implementation for DeepPoly algorithm
+2. Properly understand ResNet implementation and plan accordingly
+3. Adapt network to be optimizable w.r.t. Alpha (backprop/GD)
+4. Build a small mock Network that we can track by hand for verification of approach (only 2 inputs and couple of layers like in the lecture) -> Michael
+5. Get the fully connected networks with only relu and affine layers to work
+6. Find an abstract transformation for ConvNet Layers (have a look at referenced paper)
+7. Find an abstract transformation for ResNet Layers (tinkering)
+8. Implementing ensembling (min for each node in extra layer)
+9. Build more test examples with adversarial training / find alpha optimization routines
