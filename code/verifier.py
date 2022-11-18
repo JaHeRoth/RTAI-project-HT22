@@ -75,7 +75,7 @@ def backtrack(abstract_lower, abstract_upper, inputs, eps):
 
 
 def analyze(net, inputs, eps, true_label):
-    num_categories = len(net.layers[-1].out_features)
+    num_categories = net.layers[-1].out_features
     comparison_layer = Linear(num_categories, num_categories)
     comparison_layer.weight = np.delete(np.repeat(
         ((np.arange(num_categories) == true_label)+0).reshape((1, -1)), num_categories, axis=0
