@@ -6,10 +6,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.nn import Linear, ReLU, Conv2d
+from torch.nn import Linear, ReLU, Conv2d, BatchNorm2d
 
-from networks import get_network, get_net_name, NormalizedResnet
-
+from networks import get_network, get_net_name, NormalizedResnet, Normalization
 
 DEVICE = 'cpu'
 DTYPE = torch.float32
@@ -76,9 +75,16 @@ def backtrack(abstract_lower, abstract_upper, inputs, eps):
     return concrete_lbs, concrete_ubs
 
 
-def conv_to_affine(layer: Conv2d, in_height: int, in_width: int):
+def normalization_to_affine(layer: Normalization):
+    # TODO: Rather pass concrete input bounds through this layer, since won't lose any precision from that
+    bias = (-layer.mean).flatten()
+    weights = (1 / layer.sigma).flatten().diag()
+    return torch.hstack([bias.reshape(-1,1), weights])
+
+
+def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: BatchNorm2d = None):
     """:return Coefficients such that an inner product between this and flattened input (prepended by 1 for bias)
-    gives same result as flattening result of applying convolution layer on input."""
+    gives same result as flattening result of applying convolution layer (and possibly bn_layer) on input."""
     hpadding, wpadding = layer.kernel_size
     hstride, wstride = layer.stride
     num_filters, depth, filter_height, filter_width = layer.weight.shape
@@ -91,10 +97,12 @@ def conv_to_affine(layer: Conv2d, in_height: int, in_width: int):
         padded_coefficients[:, start_row : start_row + filter_height, start_column : start_column + filter_width] = layer.weight[f]
         relevant_coefficients = padded_coefficients[:, hpadding:-hpadding, wpadding:-wpadding]
         linear_coefficients_tensor[f, r, c] = relevant_coefficients
-    num_out_features = num_filters * num_hsteps * num_wsteps
-    linear_coefficients = linear_coefficients_tensor.reshape((num_out_features, -1))
-    bias = torch.zeros(num_out_features) if layer.bias is None else layer.bias.repeat_interleave(num_hsteps * num_wsteps)
-    affine_coefficients = torch.hstack([bias.reshape(-1,1), linear_coefficients])
+    filter_intercept = torch.zeros(num_filters) if layer.bias is None else layer.bias
+    if bn_layer is not None:
+        filter_intercept += bn_layer.bias - bn_layer.weight * bn_layer.running_mean / torch.sqrt(bn_layer.running_var + bn_layer.eps)
+        linear_coefficients_tensor *= (bn_layer.weight + 1 / torch.sqrt(bn_layer.running_var + bn_layer.eps)).reshape(-1, 1, 1, 1, 1, 1)
+    linear_coefficients = linear_coefficients_tensor.reshape((num_filters * num_hsteps * num_wsteps, -1))
+    affine_coefficients = torch.hstack([filter_intercept.repeat_interleave(num_hsteps * num_wsteps).reshape(-1,1), linear_coefficients])
     return affine_coefficients
 
 
@@ -105,7 +113,7 @@ def analyze(net, inputs, eps, true_label):
     import hiddenlayer as hl
     hl.build_graph(net, inputs).save('resnet_hiddenlayer', format='png')
     print(net)
-    conv_to_affine(net.layers[1], *inputs.shape[-2:])
+    conv_to_affine(net.resnet[0], *inputs.shape[-2:], net.resnet[1])
     # Maybe this can be replaced with direct operations on output. Or maybe current form is fine, but should rather be passed in
     num_categories = net.layers[-1].out_features
     comparison_layer = Linear(in_features=num_categories, out_features=num_categories-1, bias=False)
