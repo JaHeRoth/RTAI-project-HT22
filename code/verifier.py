@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.nn import Linear, ReLU
+from torch.nn import Linear, ReLU, Conv2d
 
 from networks import get_network, get_net_name, NormalizedResnet
 
@@ -75,12 +75,37 @@ def backtrack(abstract_lower, abstract_upper, inputs, eps):
     return concrete_lbs, concrete_ubs
 
 
+def conv_to_affine(layer: Conv2d, in_height: int, in_width: int):
+    wpadding, hpadding = layer.kernel_size
+    wstride, hstride = layer.stride
+    num_filters, depth, filter_height, filter_width = layer.weight.shape
+    padded_height, padded_width = in_height + 2 * hpadding, in_width + 2 * wpadding
+    linear_coefficients_tensor = torch.empty(num_filters, depth, padded_height, padded_width, in_height * in_width)
+    for f in range(num_filters):
+        for l in range(depth):
+            for r in range(padded_height):
+                for c in range(padded_width):
+                    leading_zeros = torch.zeros(r * padded_width + c * wstride)
+                    flattened_multiplication = torch.hstack([torch.hstack([filter_row, torch.zeros(in_width - filter_width)]) for filter_row in layer.weight[f,l]])
+                    trailing_zeros = torch.zeros(max(0, padded_height * padded_width - len(leading_zeros) - len(flattened_multiplication)))
+                    padded_coefficients = torch.hstack([leading_zeros, flattened_multiplication, trailing_zeros])
+                    initial_skip = hpadding * padded_width + wpadding
+                    true_coefficients = padded_coefficients[initial_skip : initial_skip + in_height * in_width]
+                    linear_coefficients_tensor[f, l, r, c] = true_coefficients
+    linear_coefficients = torch.flatten(linear_coefficients_tensor, start_dim=1)
+    bias = torch.zeros(num_filters) if layer.bias is None else layer.bias
+    affine_coefficients = torch.hstack([bias.reshape(-1,1), linear_coefficients])
+    return affine_coefficients
+
+
+
 def analyze(net, inputs, eps, true_label):
     from torchviz import make_dot
     make_dot(net(inputs), params=dict(net.named_parameters())).render("resnet_torchviz", format="png")
     import hiddenlayer as hl
     hl.build_graph(net, inputs).save('resnet_hiddenlayer', format='png')
     print(net)
+    conv_to_affine(net.layers[1], *inputs.shape[-2:])
     # Maybe this can be replaced with direct operations on output. Or maybe current form is fine, but should rather be passed in
     num_categories = net.layers[-1].out_features
     comparison_layer = Linear(in_features=num_categories, out_features=num_categories-1, bias=False)
