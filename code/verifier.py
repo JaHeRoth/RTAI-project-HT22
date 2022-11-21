@@ -76,23 +76,22 @@ def backtrack(abstract_lower, abstract_upper, inputs, eps):
 
 
 def conv_to_affine(layer: Conv2d, in_height: int, in_width: int):
-    wpadding, hpadding = layer.kernel_size
-    wstride, hstride = layer.stride
+    hpadding, wpadding = layer.kernel_size
+    hstride, wstride = layer.stride
     num_filters, depth, filter_height, filter_width = layer.weight.shape
     padded_height, padded_width = in_height + 2 * hpadding, in_width + 2 * wpadding
-    linear_coefficients_tensor = torch.empty(num_filters, depth, padded_height, padded_width, in_height * in_width)
+    num_hsteps, num_wsteps = (padded_height - filter_height) // hstride + 1, (padded_width - filter_width) // wstride + 1
+    linear_coefficients_tensor = torch.empty(num_filters, depth, padded_height, padded_width, in_height, in_width)
     for f in range(num_filters):
         for l in range(depth):
-            for r in range(padded_height):
-                for c in range(padded_width):
-                    leading_zeros = torch.zeros(r * padded_width + c * wstride)
-                    flattened_multiplication = torch.hstack([torch.hstack([filter_row, torch.zeros(in_width - filter_width)]) for filter_row in layer.weight[f,l]])
-                    trailing_zeros = torch.zeros(max(0, padded_height * padded_width - len(leading_zeros) - len(flattened_multiplication)))
-                    padded_coefficients = torch.hstack([leading_zeros, flattened_multiplication, trailing_zeros])
-                    initial_skip = hpadding * padded_width + wpadding
-                    true_coefficients = padded_coefficients[initial_skip : initial_skip + in_height * in_width]
-                    linear_coefficients_tensor[f, l, r, c] = true_coefficients
-    linear_coefficients = torch.flatten(linear_coefficients_tensor, start_dim=1)
+            for r in range(num_hsteps):
+                for c in range(num_wsteps):
+                    padded_coefficients = torch.zeros((padded_height, padded_width))
+                    start_row, start_column = r * hstride, c * wstride
+                    padded_coefficients[start_row : start_row + filter_height, start_column : start_column + filter_width] = layer.weight[f, l]
+                    relevant_coefficients = padded_coefficients[hpadding:-hpadding, wpadding:-wpadding]
+                    linear_coefficients_tensor[f, l, r, c] = relevant_coefficients
+    linear_coefficients = linear_coefficients_tensor.flatten(start_dim=1)
     bias = torch.zeros(num_filters) if layer.bias is None else layer.bias
     affine_coefficients = torch.hstack([bias.reshape(-1,1), linear_coefficients])
     return affine_coefficients
