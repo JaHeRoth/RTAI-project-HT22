@@ -88,11 +88,12 @@ def conv_to_affine(layer: Conv2d, in_height: int, in_width: int):
     for f, r, c in product(range(num_filters), range(num_hsteps), range(num_wsteps)):
         padded_coefficients = torch.zeros((depth, padded_height, padded_width))
         start_row, start_column = r * hstride, c * wstride
-        padded_coefficients[:, start_row : start_row + filter_height, start_column : start_column + filter_width] = layer.weight[f, l]
-        relevant_coefficients = padded_coefficients[hpadding:-hpadding, wpadding:-wpadding]
+        padded_coefficients[:, start_row : start_row + filter_height, start_column : start_column + filter_width] = layer.weight[f]
+        relevant_coefficients = padded_coefficients[:, hpadding:-hpadding, wpadding:-wpadding]
         linear_coefficients_tensor[f, r, c] = relevant_coefficients
-    linear_coefficients = linear_coefficients_tensor.reshape((num_filters * num_hsteps * num_wsteps, -1))
-    bias = torch.zeros(num_filters) if layer.bias is None else layer.bias.flatten()
+    num_out_features = num_filters * num_hsteps * num_wsteps
+    linear_coefficients = linear_coefficients_tensor.reshape((num_out_features, -1))
+    bias = torch.zeros(num_out_features) if layer.bias is None else layer.bias.repeat_interleave(num_hsteps * num_wsteps)
     affine_coefficients = torch.hstack([bias.reshape(-1,1), linear_coefficients])
     return affine_coefficients
 
