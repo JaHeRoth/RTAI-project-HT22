@@ -76,6 +76,8 @@ def backtrack(abstract_lower, abstract_upper, inputs, eps):
 
 
 def conv_to_affine(layer: Conv2d, in_height: int, in_width: int):
+    """:return Coefficients such that an inner product between this and flattened input (prepended by 1 for bias)
+    gives same result as flattening result of applying convolution layer on input."""
     hpadding, wpadding = layer.kernel_size
     hstride, wstride = layer.stride
     num_filters, depth, filter_height, filter_width = layer.weight.shape
