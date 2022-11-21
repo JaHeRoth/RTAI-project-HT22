@@ -76,6 +76,11 @@ def backtrack(abstract_lower, abstract_upper, inputs, eps):
 
 
 def analyze(net, inputs, eps, true_label):
+    from torchviz import make_dot
+    make_dot(net(inputs), params=dict(net.named_parameters())).render("resnet_torchviz", format="png")
+    import hiddenlayer as hl
+    hl.build_graph(net, inputs).save('resnet_hiddenlayer', format='png')
+    print(net)
     # Maybe this can be replaced with direct operations on output. Or maybe current form is fine, but should rather be passed in
     num_categories = net.layers[-1].out_features
     comparison_layer = Linear(in_features=num_categories, out_features=num_categories-1, bias=False)
@@ -87,6 +92,7 @@ def analyze(net, inputs, eps, true_label):
     net.layers = nn.Sequential(*net.layers, comparison_layer, nn.ReLU(), sum_layer)
 
     # Alpha should ideally be passed as function input, or the like. Maybe easiest to just have alphas for all layers
+    # Seems like out_features should be replaced by out_channels for Conv2D layers
     alpha = [torch.rand(net.layers[k-1].out_features, requires_grad=False) for k, layer in enumerate(net.layers) if type(layer) == ReLU]
     alpha_i = 0
 
