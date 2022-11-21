@@ -1,5 +1,6 @@
 import argparse
 import csv
+from itertools import product
 
 import numpy as np
 import torch
@@ -84,14 +85,12 @@ def conv_to_affine(layer: Conv2d, in_height: int, in_width: int):
     padded_height, padded_width = in_height + 2 * hpadding, in_width + 2 * wpadding
     num_hsteps, num_wsteps = (padded_height - filter_height) // hstride + 1, (padded_width - filter_width) // wstride + 1
     linear_coefficients_tensor = torch.empty(num_filters, num_hsteps, num_wsteps, depth, in_height, in_width)
-    for f in range(num_filters):
-        for r in range(num_hsteps):
-            for c in range(num_wsteps):
-                padded_coefficients = torch.zeros((depth, padded_height, padded_width))
-                start_row, start_column = r * hstride, c * wstride
-                padded_coefficients[:, start_row : start_row + filter_height, start_column : start_column + filter_width] = layer.weight[f, l]
-                relevant_coefficients = padded_coefficients[hpadding:-hpadding, wpadding:-wpadding]
-                linear_coefficients_tensor[f, r, c] = relevant_coefficients
+    for f, r, c in product(range(num_filters), range(num_hsteps), range(num_wsteps)):
+        padded_coefficients = torch.zeros((depth, padded_height, padded_width))
+        start_row, start_column = r * hstride, c * wstride
+        padded_coefficients[:, start_row : start_row + filter_height, start_column : start_column + filter_width] = layer.weight[f, l]
+        relevant_coefficients = padded_coefficients[hpadding:-hpadding, wpadding:-wpadding]
+        linear_coefficients_tensor[f, r, c] = relevant_coefficients
     linear_coefficients = linear_coefficients_tensor.reshape((num_filters * num_hsteps * num_wsteps, -1))
     bias = torch.zeros(num_filters) if layer.bias is None else layer.bias.flatten()
     affine_coefficients = torch.hstack([bias.reshape(-1,1), linear_coefficients])
