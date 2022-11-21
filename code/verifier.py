@@ -5,10 +5,10 @@ from itertools import product
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import nn
-from torch.nn import Linear, ReLU, Conv2d, BatchNorm2d
+from torch import nn, Tensor
+from torch.nn import Linear, ReLU, Conv2d, BatchNorm2d, Sequential
 
-from networks import get_network, get_net_name, NormalizedResnet, Normalization
+from networks import get_network, get_net_name, NormalizedResnet, Normalization, FullyConnected, Conv
 
 DEVICE = 'cpu'
 DTYPE = torch.float32
@@ -53,8 +53,7 @@ def get_net(net, net_name):
     return net
 
 
-def backtrack(abstract_lower, abstract_upper, inputs, eps):
-    inputs = torch.flatten(inputs)
+def backtrack(abstract_lower, abstract_upper, input_lb: Tensor, input_ub: Tensor):
     direct_lbs, direct_ubs = abstract_lower[-1], abstract_upper[-1]
     for prev_abs_lbs, prev_abs_ubs in reversed(list(zip(abstract_lower, abstract_upper))[:-1]):
         next_direct_lbs = torch.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
@@ -70,16 +69,9 @@ def backtrack(abstract_lower, abstract_upper, inputs, eps):
     concrete_ubs = direct_ubs[:, 0]
     for i in range(len(direct_lbs)):
         # Shows how we can get rid of inner loop above (using indicator functions)
-        concrete_lbs[i] += direct_lbs[i,1:] @ ((inputs-eps) * (direct_lbs[i,1:] >= 0) + (inputs+eps) * ((direct_lbs[i,1:] < 0)))
-        concrete_ubs[i] += direct_ubs[i, 1:] @ ((inputs + eps) * (direct_ubs[i, 1:] >= 0) + (inputs - eps) * ((direct_ubs[i, 1:] < 0)))
+        concrete_lbs[i] += direct_lbs[i,1:] @ (input_lb * (direct_lbs[i,1:] >= 0) + input_ub * ((direct_lbs[i,1:] < 0)))
+        concrete_ubs[i] += direct_ubs[i, 1:] @ (input_ub * (direct_ubs[i, 1:] >= 0) + input_lb * ((direct_ubs[i, 1:] < 0)))
     return concrete_lbs, concrete_ubs
-
-
-def normalization_to_affine(layer: Normalization):
-    # TODO: Rather pass concrete input bounds through this layer, since won't lose any precision from that
-    bias = (-layer.mean).flatten()
-    weights = (1 / layer.sigma).flatten().diag()
-    return torch.hstack([bias.reshape(-1,1), weights])
 
 
 def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: BatchNorm2d = None):
@@ -107,37 +99,17 @@ def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: Batch
 
 
 
-def analyze(net, inputs, eps, true_label):
-    from torchviz import make_dot
-    make_dot(net(inputs), params=dict(net.named_parameters())).render("resnet_torchviz", format="png")
-    import hiddenlayer as hl
-    hl.build_graph(net, inputs).save('resnet_hiddenlayer', format='png')
-    print(net)
-    conv_to_affine(net.resnet[0], *inputs.shape[-2:], net.resnet[1])
-    # Maybe this can be replaced with direct operations on output. Or maybe current form is fine, but should rather be passed in
-    num_categories = net.layers[-1].out_features
-    comparison_layer = Linear(in_features=num_categories, out_features=num_categories-1, bias=False)
-    comparison_layer.weight = torch.nn.Parameter(torch.Tensor(np.delete(np.eye(num_categories) - np.repeat(
-        (np.arange(num_categories) == true_label).reshape((1, -1)), num_categories, axis=0
-    ), true_label, axis=0)), requires_grad=False)
-    sum_layer = Linear(in_features=num_categories-1, out_features=1, bias=False)
-    sum_layer.weight = torch.nn.Parameter(torch.ones((1,num_categories-1)), requires_grad=False)
-    net.layers = nn.Sequential(*net.layers, comparison_layer, nn.ReLU(), sum_layer)
-
-    # Alpha should ideally be passed as function input, or the like. Maybe easiest to just have alphas for all layers
-    # Seems like out_features should be replaced by out_channels for Conv2D layers
-    alpha = [torch.rand(net.layers[k-1].out_features, requires_grad=False) for k, layer in enumerate(net.layers) if type(layer) == ReLU]
+def deep_poly(layers: Sequential, alpha, input_lb: Tensor, input_ub: Tensor):
     alpha_i = 0
-
     abstract_lower = []
     abstract_upper = []
-    for k, layer in enumerate(net.layers):
+    for k, layer in enumerate(layers):
         if type(layer) == Linear:
             coefficients = torch.hstack(((layer.bias if layer.bias is not None else torch.zeros(layer.out_features)).detach().reshape(-1, 1), layer.weight.detach()))
             abstract_lower.append(coefficients)
             abstract_upper.append(coefficients)
         elif type(layer) == ReLU:
-            prev_lbs, prev_ubs = backtrack(abstract_lower, abstract_upper, inputs, eps)
+            prev_lbs, prev_ubs = backtrack(abstract_lower, abstract_upper, input_lb, input_ub)
             curr_abstract_lower = []
             curr_abstract_upper = []
             # This should be parallelizable
@@ -159,7 +131,31 @@ def analyze(net, inputs, eps, true_label):
             abstract_lower.append(torch.vstack(curr_abstract_lower))
             abstract_upper.append(torch.vstack(curr_abstract_upper))
             alpha_i += 1
-    _, loss = backtrack(abstract_lower, abstract_upper, inputs, eps)
+    return backtrack(abstract_lower, abstract_upper, input_lb, input_ub)
+
+
+def make_loss_layers(layers, true_label):
+    num_categories = layers[-1].out_features
+    comparison_layer = Linear(in_features=num_categories, out_features=num_categories - 1, bias=False)
+    comparison_layer.weight = torch.nn.Parameter(torch.Tensor(np.delete(np.eye(num_categories) - np.repeat(
+        (np.arange(num_categories) == true_label).reshape((1, -1)), num_categories, axis=0
+    ), true_label, axis=0)), requires_grad=False)
+    sum_layer = Linear(in_features=num_categories - 1, out_features=1, bias=False)
+    sum_layer.weight = torch.nn.Parameter(torch.ones((1, num_categories - 1)), requires_grad=False)
+    return comparison_layer, nn.ReLU(), sum_layer
+
+
+def analyze(net, inputs, eps, true_label):
+    if type(net) == NormalizedResnet:
+        normalizer = net.normalization
+        layers = net.resnet
+    else:
+        normalizer = net.layers[0]
+        layers = net.layers[1:]
+    normalized_lb, normalized_ub = normalizer(inputs - eps), normalizer(inputs + eps)
+    layers = nn.Sequential(*layers, *make_loss_layers(layers, true_label))
+    alpha = None # TODO: Figure out what to do with this. Maybe best would be to attach to ReLU layers
+    _, loss = deep_poly(layers, alpha, normalized_lb, normalized_ub)
     return loss == 0
 
 
