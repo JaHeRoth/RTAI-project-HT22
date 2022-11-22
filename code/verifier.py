@@ -1,5 +1,6 @@
 import argparse
 import csv
+from enum import Enum
 from itertools import product
 from typing import Dict, List, Tuple, Optional, Union
 
@@ -9,7 +10,7 @@ import torch.nn.functional as F
 from torch import nn, Tensor, Size
 from torch.nn import Linear, ReLU, Conv2d, BatchNorm2d, Sequential
 
-from code.resnet import BasicBlock
+from resnet import BasicBlock
 from networks import get_network, get_net_name, NormalizedResnet, Normalization, FullyConnected, Conv
 
 DEVICE = 'cpu'
@@ -120,10 +121,20 @@ def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: 
     return affine_bounds(intercept, coefficients, past_bounds, input_lb, input_ub)
 
 
+def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
+    if strategy == "half":
+        return torch.ones(in_lb.shape) / 2
+    elif strategy == "rand":
+        return torch.rand(in_lb.shape)
+    elif strategy == "min":
+        return (in_ub > -in_lb).int()
+    raise ValueError(f"{strategy} is an invalid alpha-generating strategy.")
+
+
 def relu_bounds(past_bounds: Bounds, alpha: Union[Tensor, str]):
     prev_lb, prev_ub = past_bounds[-1][-2:]
     if type(alpha) == str:
-        raise NotImplementedError # TODO: Generate alpha (use enum: half, min, rand)
+        alpha = generate_alpha(prev_lb, prev_ub, strategy=alpha)
     upper_slope = prev_ub / (prev_ub - prev_lb)
     in_len = len(past_bounds[-1][0])
     lb_bias, ub_bias, lb_scaling, ub_scaling = [torch.zeros(in_len) for _ in range(4)]
@@ -199,9 +210,8 @@ def analyze(net, inputs, eps, true_label):
     input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
     layers = nn.Sequential(*layers, *make_loss_layers(layers, true_label))
-    alpha = None # TODO: Figure out what to do with this. Maybe best would be to attach to ReLU layers
     conv_to_affine(net.resnet[0], *input_lb.shape[-2:])
-    _, loss = deep_poly(layers, alpha, normalized_lb, normalized_ub)
+    (_, loss), _ = deep_poly(layers, "min", normalized_lb, normalized_ub)
     return loss == 0
 
 
