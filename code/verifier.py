@@ -60,25 +60,14 @@ Bounds = List[Tuple[Tensor, Tensor, Tensor, Tensor]]
 
 
 def backtrack(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
-    # Possible optimization is to concretize every n layers to see if concrete lower is above 0 or concrete upper is below 0
-    direct_lbs, direct_ubs = abstract_lower[-1], abstract_upper[-1]
-    for prev_abs_lbs, prev_abs_ubs in reversed(list(zip(abstract_lower, abstract_upper))[:-1]):
-        next_direct_lbs = torch.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
-        next_direct_ubs = torch.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
-        for i in range(len(direct_lbs)):
-            for j in range(direct_lbs.shape[1]-1):
-                next_direct_lbs[i,:] += direct_lbs[i,j+1] * (prev_abs_lbs if direct_lbs[i,j+1] > 0 else prev_abs_ubs)[j,:]
-                next_direct_ubs[i,:] += direct_ubs[i,j+1] * (prev_abs_lbs if direct_ubs[i,j+1] < 0 else prev_abs_ubs)[j,:]
-        next_direct_lbs[:,0] += direct_lbs[:,0]
-        next_direct_ubs[:, 0] += direct_ubs[:, 0]
-        direct_lbs, direct_ubs = next_direct_lbs, next_direct_ubs
-    concrete_lbs = direct_lbs[:,0]
-    concrete_ubs = direct_ubs[:, 0]
-    for i in range(len(direct_lbs)):
-        # Shows how we can get rid of inner loop above (using indicator functions)
-        concrete_lbs[i] += direct_lbs[i,1:] @ (input_lb * (direct_lbs[i,1:] >= 0) + input_ub * ((direct_lbs[i,1:] < 0)))
-        concrete_ubs[i] += direct_ubs[i, 1:] @ (input_ub * (direct_ubs[i, 1:] >= 0) + input_lb * ((direct_ubs[i, 1:] < 0)))
-    return concrete_lbs, concrete_ubs
+    # Possible optimization: concretize every n layers to see if concrete lower is above 0 or concrete upper is below 0
+    direct_lb, direct_ub = coefficients, coefficients
+    for abstract_lb, abstract_ub, _, _ in reversed(past_bounds):
+        direct_lb = direct_lb * (direct_lb > 0) @ abstract_lb + direct_lb * (direct_lb < 0) @ abstract_ub
+        direct_ub = direct_ub * (direct_ub > 0) @ abstract_ub + direct_ub * (direct_ub < 0) @ abstract_lb
+    concrete_lb = bias + direct_lb * (direct_lb > 0) @ input_lb + direct_lb * (direct_lb < 0) @ input_ub
+    concrete_ub = bias + direct_ub * (direct_ub > 0) @ input_ub + direct_ub * (direct_ub < 0) @ input_lb
+    return concrete_lb, concrete_ub
 
 
 def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: BatchNorm2d = None):
@@ -143,10 +132,10 @@ def relu_bounds(past_bounds: Bounds, alpha: Union[Tensor, str]):
     lb_scaling[crossing_mask] = alpha[crossing_mask]
     ub_scaling[crossing_mask] = upper_slope
     ub_bias[crossing_mask] = -upper_slope * prev_lb
-    abstract_lb = torch.hstack([lb_bias.reshape(-1,1), lb_scaling.diag()])
+    abstract_lb = torch.hstack([lb_bias.reshape(-1, 1), lb_scaling.diag()])
     abstract_ub = torch.hstack([ub_bias.reshape(-1, 1), ub_scaling.diag()])
-    concrete_lb = abstract_lb[:,0] + abstract_lb[:,1:] @ prev_lb
-    concrete_ub = abstract_ub[:,0] + abstract_ub[:,1:] @ prev_ub
+    concrete_lb = abstract_lb[:, 0] + abstract_lb[:, 1:] @ prev_lb
+    concrete_ub = abstract_ub[:, 0] + abstract_ub[:, 1:] @ prev_ub
     return (abstract_lb, abstract_ub, concrete_lb, concrete_ub), alpha
 
 
@@ -175,8 +164,8 @@ def deep_poly(layers: Sequential, alpha: Union[str, Dict[int, Tensor]], input_lb
             bounds.append(bound)
         elif type(layer) == BasicBlock:
             raise NotImplementedError # TODO: Implement
-    # TODO: Clean up this call together with backtrack
-    return backtrack(abstract_lower, abstract_upper, input_lb, input_ub), out_alpha
+    output_ub = bounds[-1][3]
+    return output_ub, out_alpha
 
 
 def make_loss_layers(layers, true_label):
@@ -211,7 +200,7 @@ def analyze(net, inputs, eps, true_label):
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
     layers = nn.Sequential(*layers, *make_loss_layers(layers, true_label))
     conv_to_affine(net.resnet[0], *input_lb.shape[-2:])
-    (_, loss), _ = deep_poly(layers, "min", normalized_lb, normalized_ub)
+    loss, _ = deep_poly(layers, "min", normalized_lb, normalized_ub)
     return loss == 0
 
 
