@@ -1,11 +1,12 @@
 import argparse
 import csv
 from itertools import product
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
+from torch import nn, Tensor, Size
 from torch.nn import Linear, ReLU, Conv2d, BatchNorm2d, Sequential
 
 from networks import get_network, get_net_name, NormalizedResnet, Normalization, FullyConnected, Conv
@@ -53,7 +54,10 @@ def get_net(net, net_name):
     return net
 
 
-def backtrack(abstract_lower, abstract_upper, input_lb: Tensor, input_ub: Tensor):
+Bounds = List[Tuple[Tensor, Tensor, Tensor, Tensor]]
+
+
+def backtrack(coefficients: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
     direct_lbs, direct_ubs = abstract_lower[-1], abstract_upper[-1]
     for prev_abs_lbs, prev_abs_ubs in reversed(list(zip(abstract_lower, abstract_upper))[:-1]):
         next_direct_lbs = torch.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
@@ -93,22 +97,48 @@ def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: Batch
     if bn_layer is not None:
         filter_intercept += bn_layer.bias - bn_layer.weight * bn_layer.running_mean / torch.sqrt(bn_layer.running_var + bn_layer.eps)
         linear_coefficients_tensor *= (bn_layer.weight + 1 / torch.sqrt(bn_layer.running_var + bn_layer.eps)).reshape(-1, 1, 1, 1, 1, 1)
+    intercept = filter_intercept.repeat_interleave(num_hsteps * num_wsteps).reshape(-1,1)
     linear_coefficients = linear_coefficients_tensor.reshape((num_filters * num_hsteps * num_wsteps, -1))
-    affine_coefficients = torch.hstack([filter_intercept.repeat_interleave(num_hsteps * num_wsteps).reshape(-1,1), linear_coefficients])
-    return affine_coefficients
+    return intercept, linear_coefficients
 
 
+def affine_bounds(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
+    abstract_lower = abstract_upper = torch.hstack([bias.reshape(-1, 1), coefficients])
+    concrete_lower, concrete_upper = backtrack(coefficients, past_bounds, input_lb, input_ub)
+    return abstract_lower, abstract_upper, concrete_lower, concrete_upper
 
-def deep_poly(layers: Sequential, alpha, input_lb: Tensor, input_ub: Tensor):
-    alpha_i = 0
-    abstract_lower = []
-    abstract_upper = []
+
+def fc_bounds(layer: Linear, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
+    bias = layer.bias.detach() if layer.bias is not None else torch.zeros(layer.out_features)
+    return affine_bounds(bias, layer.weight.detach(), past_bounds, input_lb, input_ub)
+
+
+def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor, in_height: int, in_width: int, bn_layer: Optional[BatchNorm2d]):
+    intercept, coefficients = conv_to_affine(layer.detach(), in_height, in_width, bn_layer.detach())
+    return affine_bounds(intercept, coefficients, past_bounds, input_lb, input_ub)
+
+
+def infer_layer_input_dimensions(layers: Sequential, input_lb: Tensor):
+    current = input_lb
+    dims: List[Size] = []
+    for layer in layers:
+        dims.append(current.shape)
+        current = layer(current)
+    return dims
+
+
+def deep_poly(layers: Sequential, alpha: Dict[int, Tensor], input_lb: Tensor, input_ub: Tensor):
+    in_dims = infer_layer_input_dimensions(layers, input_lb)
+    bounds: Bounds = []
     for k, layer in enumerate(layers):
         if type(layer) == Linear:
-            coefficients = torch.hstack(((layer.bias if layer.bias is not None else torch.zeros(layer.out_features)).detach().reshape(-1, 1), layer.weight.detach()))
-            abstract_lower.append(coefficients)
-            abstract_upper.append(coefficients)
+            bounds.append(fc_bounds(layer, bounds, input_lb, input_ub))
+        if type(layer) == Conv2d:
+            in_height, in_width = in_dims[k][-2:]
+            bn_layer = layers[k+1] if type(layers[k+1]) == BatchNorm2d else None
+            bounds.append(conv_bounds(layer, bounds, input_lb, input_ub, in_height, in_width, bn_layer))
         elif type(layer) == ReLU:
+            # TODO: Move into relu_bounds
             prev_lbs, prev_ubs = backtrack(abstract_lower, abstract_upper, input_lb, input_ub)
             curr_abstract_lower = []
             curr_abstract_upper = []
@@ -130,7 +160,6 @@ def deep_poly(layers: Sequential, alpha, input_lb: Tensor, input_ub: Tensor):
                     curr_abstract_upper.append(torch.hstack((-upper_slope * prev_lb, relevant_input_mask*upper_slope)))
             abstract_lower.append(torch.vstack(curr_abstract_lower))
             abstract_upper.append(torch.vstack(curr_abstract_upper))
-            alpha_i += 1
     return backtrack(abstract_lower, abstract_upper, input_lb, input_ub)
 
 
