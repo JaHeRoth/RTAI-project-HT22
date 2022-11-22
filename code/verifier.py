@@ -1,7 +1,7 @@
 import argparse
 import csv
 from itertools import product
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 
 import numpy as np
 import torch
@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torch import nn, Tensor, Size
 from torch.nn import Linear, ReLU, Conv2d, BatchNorm2d, Sequential
 
+from code.resnet import BasicBlock
 from networks import get_network, get_net_name, NormalizedResnet, Normalization, FullyConnected, Conv
 
 DEVICE = 'cpu'
@@ -119,6 +120,25 @@ def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: 
     return affine_bounds(intercept, coefficients, past_bounds, input_lb, input_ub)
 
 
+def relu_bounds(past_bounds: Bounds, alpha: Union[Tensor, str]):
+    prev_lb, prev_ub = past_bounds[-1][-2:]
+    if type(alpha) == str:
+        raise NotImplementedError # TODO: Generate alpha (use enum: half, min, rand)
+    upper_slope = prev_ub / (prev_ub - prev_lb)
+    in_len = len(past_bounds[-1][0])
+    lb_bias, ub_bias, lb_scaling, ub_scaling = [torch.zeros(in_len) for _ in range(4)]
+    lb_scaling[prev_lb >= 0], ub_scaling[prev_lb >= 0] = 1, 1
+    crossing_mask = (prev_lb < 0) & (prev_ub > 0)
+    lb_scaling[crossing_mask] = alpha[crossing_mask]
+    ub_scaling[crossing_mask] = upper_slope
+    ub_bias[crossing_mask] = -upper_slope * prev_lb
+    abstract_lb = torch.hstack([lb_bias.reshape(-1,1), lb_scaling.diag()])
+    abstract_ub = torch.hstack([ub_bias.reshape(-1, 1), ub_scaling.diag()])
+    concrete_lb = abstract_lb[:,0] + abstract_lb[:,1:] @ prev_lb
+    concrete_ub = abstract_ub[:,0] + abstract_ub[:,1:] @ prev_ub
+    return (abstract_lb, abstract_ub, concrete_lb, concrete_ub), alpha
+
+
 def infer_layer_input_dimensions(layers: Sequential, input_lb: Tensor):
     current = input_lb
     dims: List[Size] = []
@@ -128,41 +148,24 @@ def infer_layer_input_dimensions(layers: Sequential, input_lb: Tensor):
     return dims
 
 
-def deep_poly(layers: Sequential, alpha: Dict[int, Tensor], input_lb: Tensor, input_ub: Tensor):
+def deep_poly(layers: Sequential, alpha: Union[str, Dict[int, Tensor]], input_lb: Tensor, input_ub: Tensor):
     in_dims = infer_layer_input_dimensions(layers, input_lb)
     bounds: Bounds = []
+    out_alpha: Dict[int, Tensor] = {}
     for k, layer in enumerate(layers):
         if type(layer) == Linear:
             bounds.append(fc_bounds(layer, bounds, input_lb, input_ub))
-        if type(layer) == Conv2d:
+        elif type(layer) == Conv2d:
             in_height, in_width = in_dims[k][-2:]
             bn_layer = layers[k+1] if type(layers[k+1]) == BatchNorm2d else None
             bounds.append(conv_bounds(layer, bounds, input_lb, input_ub, in_height, in_width, bn_layer))
         elif type(layer) == ReLU:
-            # TODO: Move into relu_bounds
-            prev_lbs, prev_ubs = backtrack(abstract_lower, abstract_upper, input_lb, input_ub)
-            curr_abstract_lower = []
-            curr_abstract_upper = []
-            # This should be parallelizable # TODO Do that by building vector here and calling diag
-            for i, (prev_lb, prev_ub) in enumerate(zip(prev_lbs, prev_ubs)):
-                in_features = len(abstract_lower[-1])
-                if prev_ub <= 0:
-                    shared_coefficients = torch.zeros(in_features+1)
-                    curr_abstract_lower.append(shared_coefficients)
-                    curr_abstract_upper.append(shared_coefficients)
-                elif prev_lb >= 0:
-                    shared_coefficients = (torch.arange(in_features+1) == i+1)+0
-                    curr_abstract_lower.append(shared_coefficients)
-                    curr_abstract_upper.append(shared_coefficients)
-                else:
-                    upper_slope = prev_ub / (prev_ub - prev_lb)
-                    relevant_input_mask = (torch.arange(in_features) == i)+0
-                    curr_abstract_lower.append(torch.hstack((torch.zeros(1), relevant_input_mask*alpha[alpha_i][i])))
-                    curr_abstract_upper.append(torch.hstack((-upper_slope * prev_lb, relevant_input_mask*upper_slope)))
-            abstract_lower.append(torch.vstack(curr_abstract_lower))
-            abstract_upper.append(torch.vstack(curr_abstract_upper))
-            # TODO: Compute concrete bounds
-    return backtrack(abstract_lower, abstract_upper, input_lb, input_ub)
+            bound, out_alpha[k] = relu_bounds(bounds, alpha[k] if type(alpha) == Dict else alpha)
+            bounds.append(bound)
+        elif type(layer) == BasicBlock:
+            raise NotImplementedError # TODO: Implement
+    # TODO: Clean up this call together with backtrack
+    return backtrack(abstract_lower, abstract_upper, input_lb, input_ub), out_alpha
 
 
 def make_loss_layers(layers, true_label):
@@ -191,6 +194,7 @@ def analyze(net, inputs, eps, true_label):
         layers = net.resnet
     else:
         normalizer = net.layers[0]
+        # TODO: Flatten nested Sequentials (if doesn't change functioning of network)
         layers = net.layers[1:]
     input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
