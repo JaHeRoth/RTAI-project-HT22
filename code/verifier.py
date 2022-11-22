@@ -63,6 +63,7 @@ def backtrack(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input_lb:
     # Possible optimization: concretize every n layers to see if concrete lower is above 0 or concrete upper is below 0
     direct_lb, direct_ub = coefficients, coefficients
     for abstract_lb, abstract_ub, _, _ in reversed(past_bounds):
+        # TODO: Fix crash here. Problem boils down to how to deal with bias
         direct_lb = direct_lb * (direct_lb > 0) @ abstract_lb + direct_lb * (direct_lb < 0) @ abstract_ub
         direct_ub = direct_ub * (direct_ub > 0) @ abstract_ub + direct_ub * (direct_ub < 0) @ abstract_lb
     concrete_lb = bias + direct_lb * (direct_lb > 0) @ input_lb + direct_lb * (direct_lb < 0) @ input_ub
@@ -116,7 +117,7 @@ def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
     elif strategy == "rand":
         return torch.rand(in_lb.shape)
     elif strategy == "min":
-        return (in_ub > -in_lb).int()
+        return (in_ub > -in_lb).float()
     raise ValueError(f"{strategy} is an invalid alpha-generating strategy.")
 
 
@@ -130,8 +131,8 @@ def relu_bounds(past_bounds: Bounds, alpha: Union[Tensor, str]):
     lb_scaling[prev_lb >= 0], ub_scaling[prev_lb >= 0] = 1, 1
     crossing_mask = (prev_lb < 0) & (prev_ub > 0)
     lb_scaling[crossing_mask] = alpha[crossing_mask]
-    ub_scaling[crossing_mask] = upper_slope
-    ub_bias[crossing_mask] = -upper_slope * prev_lb
+    ub_scaling[crossing_mask] = upper_slope[crossing_mask]
+    ub_bias[crossing_mask] = (-upper_slope * prev_lb)[crossing_mask]
     abstract_lb = torch.hstack([lb_bias.reshape(-1, 1), lb_scaling.diag()])
     abstract_ub = torch.hstack([ub_bias.reshape(-1, 1), ub_scaling.diag()])
     concrete_lb = abstract_lb[:, 0] + abstract_lb[:, 1:] @ prev_lb
@@ -150,6 +151,7 @@ def infer_layer_input_dimensions(layers: Sequential, input_lb: Tensor):
 
 def deep_poly(layers: Sequential, alpha: Union[str, Dict[int, Tensor]], input_lb: Tensor, input_ub: Tensor):
     in_dims = infer_layer_input_dimensions(layers, input_lb)
+    input_lb, input_ub = input_lb.flatten(), input_ub.flatten()
     bounds: Bounds = []
     out_alpha: Dict[int, Tensor] = {}
     for k, layer in enumerate(layers):
@@ -199,7 +201,6 @@ def analyze(net, inputs, eps, true_label):
     input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
     layers = nn.Sequential(*layers, *make_loss_layers(layers, true_label))
-    conv_to_affine(net.resnet[0], *input_lb.shape[-2:])
     loss, _ = deep_poly(layers, "min", normalized_lb, normalized_ub)
     return loss == 0
 
