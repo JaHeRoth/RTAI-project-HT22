@@ -57,7 +57,8 @@ def get_net(net, net_name):
 Bounds = List[Tuple[Tensor, Tensor, Tensor, Tensor]]
 
 
-def backtrack(coefficients: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
+def backtrack(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
+    # Possible optimization is to concretize every n layers to see if concrete lower is above 0 or concrete upper is below 0
     direct_lbs, direct_ubs = abstract_lower[-1], abstract_upper[-1]
     for prev_abs_lbs, prev_abs_ubs in reversed(list(zip(abstract_lower, abstract_upper))[:-1]):
         next_direct_lbs = torch.zeros((len(direct_lbs), prev_abs_lbs.shape[1]))
@@ -104,7 +105,7 @@ def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: Batch
 
 def affine_bounds(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
     abstract_lower = abstract_upper = torch.hstack([bias.reshape(-1, 1), coefficients])
-    concrete_lower, concrete_upper = backtrack(coefficients, past_bounds, input_lb, input_ub)
+    concrete_lower, concrete_upper = backtrack(bias, coefficients, past_bounds, input_lb, input_ub)
     return abstract_lower, abstract_upper, concrete_lower, concrete_upper
 
 
@@ -142,7 +143,7 @@ def deep_poly(layers: Sequential, alpha: Dict[int, Tensor], input_lb: Tensor, in
             prev_lbs, prev_ubs = backtrack(abstract_lower, abstract_upper, input_lb, input_ub)
             curr_abstract_lower = []
             curr_abstract_upper = []
-            # This should be parallelizable
+            # This should be parallelizable # TODO Do that by building vector here and calling diag
             for i, (prev_lb, prev_ub) in enumerate(zip(prev_lbs, prev_ubs)):
                 in_features = len(abstract_lower[-1])
                 if prev_ub <= 0:
@@ -160,6 +161,7 @@ def deep_poly(layers: Sequential, alpha: Dict[int, Tensor], input_lb: Tensor, in
                     curr_abstract_upper.append(torch.hstack((-upper_slope * prev_lb, relevant_input_mask*upper_slope)))
             abstract_lower.append(torch.vstack(curr_abstract_lower))
             abstract_upper.append(torch.vstack(curr_abstract_upper))
+            # TODO: Compute concrete bounds
     return backtrack(abstract_lower, abstract_upper, input_lb, input_ub)
 
 
@@ -174,6 +176,15 @@ def make_loss_layers(layers, true_label):
     return comparison_layer, nn.ReLU(), sum_layer
 
 
+# TODO: alpha_optimizing_deep_poly
+
+# TODO?: ensemble (like following pseudocode:)
+# for c in categories:
+#     for epoch in epochs:
+#         for ens in ensebmles:
+#             update(ens)
+
+
 def analyze(net, inputs, eps, true_label):
     if type(net) == NormalizedResnet:
         normalizer = net.normalization
@@ -181,9 +192,11 @@ def analyze(net, inputs, eps, true_label):
     else:
         normalizer = net.layers[0]
         layers = net.layers[1:]
-    normalized_lb, normalized_ub = normalizer(inputs - eps), normalizer(inputs + eps)
+    input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
+    normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
     layers = nn.Sequential(*layers, *make_loss_layers(layers, true_label))
     alpha = None # TODO: Figure out what to do with this. Maybe best would be to attach to ReLU layers
+    conv_to_affine(net.resnet[0], *input_lb.shape[-2:])
     _, loss = deep_poly(layers, alpha, normalized_lb, normalized_ub)
     return loss == 0
 
