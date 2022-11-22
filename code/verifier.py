@@ -59,15 +59,22 @@ def get_net(net, net_name):
 Bounds = List[Tuple[Tensor, Tensor, Tensor, Tensor]]
 
 
+def cased_mul_w_bias(lhs_with_bias_column: Tensor, pos_rhs: Tensor, neg_rhs: Tensor):
+    pos_rhs_with_constants_row = torch.vstack([torch.ones(1, pos_rhs.shape[1]), pos_rhs])
+    neg_rhs_with_constants_row = torch.vstack([torch.ones(1, neg_rhs.shape[1]), neg_rhs])
+    return (lhs_with_bias_column * (lhs_with_bias_column >= 0) @ pos_rhs_with_constants_row
+            + lhs_with_bias_column * (lhs_with_bias_column < 0) @ neg_rhs_with_constants_row)
+
+
 def backtrack(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
     # Possible optimization: concretize every n layers to see if concrete lower is above 0 or concrete upper is below 0
-    direct_lb, direct_ub = coefficients, coefficients
+    direct_lb, direct_ub = [torch.hstack([bias.reshape(-1, 1), coefficients]) for _ in range(2)]
     for abstract_lb, abstract_ub, _, _ in reversed(past_bounds):
-        # TODO: Fix crash here. Problem boils down to how to deal with bias
-        direct_lb = direct_lb * (direct_lb > 0) @ abstract_lb + direct_lb * (direct_lb < 0) @ abstract_ub
-        direct_ub = direct_ub * (direct_ub > 0) @ abstract_ub + direct_ub * (direct_ub < 0) @ abstract_lb
-    concrete_lb = bias + direct_lb * (direct_lb > 0) @ input_lb + direct_lb * (direct_lb < 0) @ input_ub
-    concrete_ub = bias + direct_ub * (direct_ub > 0) @ input_ub + direct_ub * (direct_ub < 0) @ input_lb
+        direct_lb = cased_mul_w_bias(direct_lb, abstract_lb, abstract_ub)
+        direct_ub = cased_mul_w_bias(direct_ub, abstract_ub, abstract_lb)
+    input_lb, input_ub = input_lb.reshape(-1, 1), input_ub.reshape(-1, 1)
+    concrete_lb = cased_mul_w_bias(direct_lb, input_lb, input_ub).flatten()
+    concrete_ub = cased_mul_w_bias(direct_ub, input_ub, input_lb).flatten()
     return concrete_lb, concrete_ub
 
 
