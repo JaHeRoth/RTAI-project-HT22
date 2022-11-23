@@ -171,12 +171,22 @@ def deep_poly(layers: Sequential, alpha: Union[str, Dict[int, Tensor]], input_lb
             bn_layer = layers[k+1] if type(layers[k+1]) == BatchNorm2d else None
             bounds.append(conv_bounds(layer, bounds, input_lb, input_ub, in_height, in_width, bn_layer))
         elif type(layer) == ReLU:
-            bound, out_alpha[k] = relu_bounds(bounds, alpha[k] if type(alpha) == Dict else alpha)
+            bound, out_alpha[k] = relu_bounds(bounds, alpha[k] if type(alpha) == dict else alpha)
             bounds.append(bound)
         elif type(layer) == BasicBlock:
             raise NotImplementedError # TODO: Implement
     output_ub = bounds[-1][3]
     return output_ub, out_alpha
+
+
+def ensemble_poly(layers: Sequential, input_lb: Tensor, input_ub: Tensor, best_alpha: Union[str, Dict]):
+    out_ub, alpha = deep_poly(layers, best_alpha, input_lb, input_ub)
+    if out_ub <= 0: return alpha, True
+    out_ub, alpha = deep_poly(layers, "min", input_lb, input_ub)
+    if out_ub <= 0: return alpha, True
+    out_ub, alpha = deep_poly(layers, "half", input_lb, input_ub)
+    if out_ub <= 0: return alpha, True
+    return None, False
 
 
 def make_loss_layers(layers, true_label):
@@ -188,6 +198,28 @@ def make_loss_layers(layers, true_label):
     sum_layer = Linear(in_features=num_categories - 1, out_features=1, bias=False)
     sum_layer.weight = torch.nn.Parameter(torch.ones((1, num_categories - 1)), requires_grad=False)
     return comparison_layer, nn.ReLU(), sum_layer
+
+
+def make_comparison_layer(net_layers: Sequential, true_label: int, adversarial_label: int):
+    num_categories = net_layers[-1].out_features
+    weight = np.zeros((1, num_categories))
+    weight[:, true_label] = -1
+    weight[:, adversarial_label] = 1
+    comparison_layer = Linear(in_features=num_categories, out_features=1, bias=False)
+    comparison_layer.weight = torch.nn.Parameter(torch.Tensor(weight))
+    return comparison_layer
+
+
+def ensemble(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int):
+    best_alpha = "rand"
+    for category in range(net_layers[-1].out_features):
+        if category == true_label:
+            continue
+        layers = Sequential(*net_layers, make_comparison_layer(net_layers, true_label, adversarial_label=category))
+        best_alpha, verifiable = ensemble_poly(layers, input_lb, input_ub, best_alpha)
+        if not verifiable:
+            return False
+    return True
 
 
 # TODO: alpha_optimizing_deep_poly
@@ -202,16 +234,14 @@ def make_loss_layers(layers, true_label):
 def analyze(net, inputs, eps, true_label):
     if type(net) == NormalizedResnet:
         normalizer = net.normalization
+        # TODO: Flatten nested Sequentials (if doesn't change functioning of network)
         layers = net.resnet
     else:
         normalizer = net.layers[0]
-        # TODO: Flatten nested Sequentials (if doesn't change functioning of network)
         layers = net.layers[1:]
     input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
-    layers = nn.Sequential(*layers, *make_loss_layers(layers, true_label))
-    loss, _ = deep_poly(layers, "min", normalized_lb, normalized_ub)
-    return loss == 0
+    return ensemble(layers, normalized_lb, normalized_ub, true_label)
 
 
 def main():
