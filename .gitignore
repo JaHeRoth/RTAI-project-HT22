@@ -3,6 +3,8 @@ Pipfile
 Pipfile.lock
 examples/res.txt
 .idea/
+mnist_data/
+cifar_data/
 
 
 ## PYCHARM gitignore

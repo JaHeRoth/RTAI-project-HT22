@@ -16,6 +16,7 @@ from resnet import BasicBlock
 
 DEVICE = 'cpu'
 DTYPE = torch.float32
+VERBOSE = True
 
 def transform_image(pixel_values, input_dim):
     normalized_pixel_values = torch.tensor([float(p) / 255.0 for p in pixel_values])
@@ -319,7 +320,7 @@ def analyze(net, inputs, eps, true_label):
         layers = net.layers[1:]
     input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
-    return ensemble(layers, normalized_lb, normalized_ub, true_label)
+    return ensemble(layers, normalized_lb, normalized_ub, true_label, VERBOSE)
 
 
 def main():
