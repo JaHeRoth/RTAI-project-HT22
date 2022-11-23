@@ -1,0 +1,4 @@
+cifar_data/
+mnist_data/
+__pycache__/
+examples/res.txt
