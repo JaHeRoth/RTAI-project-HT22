@@ -203,6 +203,7 @@ def ensemble_poly(layers: Sequential, input_lb: Tensor, input_ub: Tensor, best_a
             out_ub, out_alpha = deep_poly(layers, alpha, input_lb, input_ub)
             if out_ub <= 0:
                 return out_alpha, True
+            # TODO: This check isn't useful, so should be replaced by evolutionary alg (e.g. replacing worst by rand)
             l1_update_norm = np.array([(alpha[k] - old_alpha[k]).abs().sum() for k in old_alpha.keys()]).sum()
             if l1_update_norm < min_update_norm:
                 out_ub, out_alpha = deep_poly(layers, "rand", input_lb, input_ub)
@@ -237,7 +238,7 @@ def print_if(msg: str, condition: bool):
         print(msg)
 
 
-def ensemble(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int, verbose=False):
+def ensemble(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int, verbose=True):
     start_time = datetime.now()
     best_alpha = "rand"
     for category in range(net_layers[-1].out_features):
@@ -246,9 +247,10 @@ def ensemble(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_la
         layers = Sequential(*net_layers, make_comparison_layer(net_layers, true_label, adversarial_label=category))
         best_alpha, verifiable = ensemble_poly(layers, input_lb, input_ub, best_alpha)
         if not verifiable:
-            print_if(f"Not verified after {(datetime.now()-start_time).total_seconds()}", verbose)
+            print_if(f"Not verified after {(datetime.now()-start_time).total_seconds()} seconds.", verbose)
             return False
-    print_if(f"Verified after {(datetime.now() - start_time).total_seconds()}", verbose)
+        print_if(f"Category {category} beat after {(datetime.now()-start_time).total_seconds()} seconds.", verbose)
+    print_if(f"Verified after {(datetime.now() - start_time).total_seconds()} seconds.", verbose)
     return True
 
 
