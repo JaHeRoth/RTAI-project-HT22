@@ -60,10 +60,11 @@ Bounds = List[Tuple[Tensor, Tensor, Tensor, Tensor]]
 
 
 def cased_mul_w_bias(lhs_with_bias_column: Tensor, pos_rhs: Tensor, neg_rhs: Tensor):
-    pos_rhs_with_constants_row = torch.vstack([torch.ones(1, pos_rhs.shape[1]), pos_rhs])
-    neg_rhs_with_constants_row = torch.vstack([torch.ones(1, neg_rhs.shape[1]), neg_rhs])
-    return (lhs_with_bias_column * (lhs_with_bias_column >= 0) @ pos_rhs_with_constants_row
-            + lhs_with_bias_column * (lhs_with_bias_column < 0) @ neg_rhs_with_constants_row)
+    bias_to_bias_row = torch.hstack([torch.ones(1, 1), torch.zeros(1, pos_rhs.shape[1] - 1)])
+    pos_rhs_with_b2b_row = torch.vstack([bias_to_bias_row, pos_rhs])
+    neg_rhs_with_b2b_row = torch.vstack([bias_to_bias_row, neg_rhs])
+    return (lhs_with_bias_column * (lhs_with_bias_column >= 0) @ pos_rhs_with_b2b_row
+            + lhs_with_bias_column * (lhs_with_bias_column < 0) @ neg_rhs_with_b2b_row)
 
 
 def backtrack(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
