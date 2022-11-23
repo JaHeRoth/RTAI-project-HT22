@@ -82,11 +82,12 @@ def backtrack(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input_lb:
 def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: BatchNorm2d = None):
     """:return Coefficients such that an inner product between this and flattened input (prepended by 1 for bias)
     gives same result as flattening result of applying convolution layer (and possibly bn_layer) on input."""
-    hpadding, wpadding = layer.kernel_size
+    hpadding, wpadding = layer.padding
     hstride, wstride = layer.stride
     num_filters, depth, filter_height, filter_width = layer.weight.shape
     padded_height, padded_width = in_height + 2 * hpadding, in_width + 2 * wpadding
-    num_hsteps, num_wsteps = (padded_height - filter_height) // hstride + 1, (padded_width - filter_width) // wstride + 1
+    # TODO: Figure out why in the world this is not the true output dimension
+    num_hsteps, num_wsteps = 1 + (padded_height - filter_height) // hstride, 1 + (padded_width - filter_width) // wstride
     linear_coefficients_tensor = torch.empty(num_filters, num_hsteps, num_wsteps, depth, in_height, in_width)
     for f, r, c in product(range(num_filters), range(num_hsteps), range(num_wsteps)):
         padded_coefficients = torch.zeros((depth, padded_height, padded_width))
@@ -100,7 +101,7 @@ def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: Batch
         linear_coefficients_tensor *= (bn_layer.weight + 1 / torch.sqrt(bn_layer.running_var + bn_layer.eps)).reshape(-1, 1, 1, 1, 1, 1)
     intercept = filter_intercept.repeat_interleave(num_hsteps * num_wsteps).reshape(-1,1)
     linear_coefficients = linear_coefficients_tensor.reshape((num_filters * num_hsteps * num_wsteps, -1))
-    return intercept, linear_coefficients
+    return intercept.detach(), linear_coefficients.detach()
 
 
 def affine_bounds(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
@@ -115,7 +116,7 @@ def fc_bounds(layer: Linear, past_bounds: Bounds, input_lb: Tensor, input_ub: Te
 
 
 def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor, in_height: int, in_width: int, bn_layer: Optional[BatchNorm2d]):
-    intercept, coefficients = conv_to_affine(layer.detach(), in_height, in_width, bn_layer.detach())
+    intercept, coefficients = conv_to_affine(layer, in_height, in_width, bn_layer)
     return affine_bounds(intercept, coefficients, past_bounds, input_lb, input_ub)
 
 
