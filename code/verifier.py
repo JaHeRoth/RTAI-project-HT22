@@ -1,5 +1,6 @@
 import argparse
 import csv
+from datetime import datetime
 from enum import Enum
 from itertools import product
 from typing import Dict, List, Tuple, Optional, Union
@@ -133,7 +134,7 @@ def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
 def relu_bounds(past_bounds: Bounds, alpha: Union[Tensor, str]):
     prev_lb, prev_ub = past_bounds[-1][-2:]
     if type(alpha) == str:
-        alpha = generate_alpha(prev_lb, prev_ub, strategy=alpha)
+        alpha = generate_alpha(prev_lb, prev_ub, strategy=alpha).requires_grad_()
     upper_slope = prev_ub / (prev_ub - prev_lb)
     in_len = len(past_bounds[-1][0])
     lb_bias, ub_bias, lb_scaling, ub_scaling = [torch.zeros(in_len) for _ in range(4)]
@@ -180,12 +181,33 @@ def deep_poly(layers: Sequential, alpha: Union[str, Dict[int, Tensor]], input_lb
 
 
 def ensemble_poly(layers: Sequential, input_lb: Tensor, input_ub: Tensor, best_alpha: Union[str, Dict]):
-    out_ub, alpha = deep_poly(layers, best_alpha, input_lb, input_ub)
-    if out_ub <= 0: return alpha, True
-    out_ub, alpha = deep_poly(layers, "min", input_lb, input_ub)
-    if out_ub <= 0: return alpha, True
-    out_ub, alpha = deep_poly(layers, "half", input_lb, input_ub)
-    if out_ub <= 0: return alpha, True
+    out_ubs = []
+    alphas = []
+    start_alphas = [best_alpha, "min", "half", "rand", "rand", "rand"]
+    for alpha in start_alphas:
+        out_ub, out_alpha = deep_poly(layers, alpha, input_lb, input_ub)
+        if out_ub <= 0:
+            return out_alpha, True
+        out_ubs.append(out_ub)
+        alphas.append(out_alpha)
+
+    # TODO: Chosen arbitrarily, tune this (along with start_alphas) and consider some form of evolutionary alg
+    # max_iter should be inf in main branch (since no point in giving up early if haven't successfully verified)
+    max_iter = 5
+    min_update_norm = 10**-2
+    lr = 10**0
+    for epoch in range(max_iter):
+        for i, (old_ub, old_alpha) in enumerate(zip(out_ubs, alphas)):
+            old_ub.backward()
+            alpha = {k: (old_alpha[k] - lr * old_alpha[k].grad).clamp(0, 1).detach().requires_grad_() for k in old_alpha.keys()}
+            out_ub, out_alpha = deep_poly(layers, alpha, input_lb, input_ub)
+            if out_ub <= 0:
+                return out_alpha, True
+            l1_update_norm = np.array([(alpha[k] - old_alpha[k]).abs().sum() for k in old_alpha.keys()]).sum()
+            if l1_update_norm < min_update_norm:
+                out_ub, out_alpha = deep_poly(layers, "rand", input_lb, input_ub)
+            out_ubs[i], alphas[i] = out_ub, out_alpha
+
     return None, False
 
 
@@ -210,7 +232,13 @@ def make_comparison_layer(net_layers: Sequential, true_label: int, adversarial_l
     return comparison_layer
 
 
-def ensemble(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int):
+def print_if(msg: str, condition: bool):
+    if condition:
+        print(msg)
+
+
+def ensemble(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int, verbose=False):
+    start_time = datetime.now()
     best_alpha = "rand"
     for category in range(net_layers[-1].out_features):
         if category == true_label:
@@ -218,20 +246,19 @@ def ensemble(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_la
         layers = Sequential(*net_layers, make_comparison_layer(net_layers, true_label, adversarial_label=category))
         best_alpha, verifiable = ensemble_poly(layers, input_lb, input_ub, best_alpha)
         if not verifiable:
+            print_if(f"Not verified after {(datetime.now()-start_time).total_seconds()}", verbose)
             return False
+    print_if(f"Verified after {(datetime.now() - start_time).total_seconds()}", verbose)
     return True
 
 
-# TODO: alpha_optimizing_deep_poly
-
-# TODO?: ensemble (like following pseudocode:)
-# for c in categories:
-#     for epoch in epochs:
-#         for ens in ensebmles:
-#             update(ens)
+def set_seed(seed: int):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 def analyze(net, inputs, eps, true_label):
+    set_seed(0)
     if type(net) == NormalizedResnet:
         normalizer = net.normalization
         # TODO: Flatten nested Sequentials (if doesn't change functioning of network)
