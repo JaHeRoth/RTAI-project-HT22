@@ -238,8 +238,10 @@ def ensemble_poly(layers: Sequential, input_lb: Tensor, input_ub: Tensor, best_a
 
     # TODO: Chosen arbitrarily, tune this (along with start_alphas) and consider some form of evolutionary alg
     # max_iter should be inf in main branch (since no point in giving up early if haven't successfully verified)
-    max_iter = 5
-    min_update_norm = 10**-2
+    # TODO: verbose and whether max_iter is small or large should rather be set
+    #  by some (possibly global) variable determining if we're in debug mode or not
+    max_iter = 10**5
+    min_update_norm = 10**-4
     lr = 10**0
     for epoch in range(max_iter):
         for i, (old_ub, old_alpha) in enumerate(zip(out_ubs, alphas)):
@@ -252,6 +254,8 @@ def ensemble_poly(layers: Sequential, input_lb: Tensor, input_ub: Tensor, best_a
             l1_update_norm = np.array([(alpha[k] - old_alpha[k]).abs().sum() for k in old_alpha.keys()]).sum()
             if l1_update_norm < min_update_norm:
                 out_ub, out_alpha, _ = deep_poly(layers, "rand", input_lb, input_ub)
+                print_if(f"{i}th alpha was changing too little"
+                         f"(possibly stuck in local minima), so reset to rand.", verbose)
             out_ubs[i], alphas[i] = out_ub, out_alpha
         print_if(f"out_ubs after epoch no {epoch + 1}: {[out_ub.detach().item() for out_ub in out_ubs]}", verbose)
 
