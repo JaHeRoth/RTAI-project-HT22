@@ -3,11 +3,16 @@ Pipfile
 Pipfile.lock
 examples/res.txt
 .idea/
+<<<<<<< HEAD
+cifar_data/
+mnist_data/
+=======
 mnist_data/
 cifar_data/
 code/__pychache__/
 plots/
 code/my_evaluate
+>>>>>>> 341bce80f597c71bc9d462d44505efc396102917
 
 
 ## PYCHARM gitignore
