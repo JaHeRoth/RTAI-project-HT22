@@ -16,7 +16,7 @@ from resnet import BasicBlock
 
 DEVICE = 'cpu'
 DTYPE = torch.float32
-VERBOSE = True
+DEBUG = True
 
 def transform_image(pixel_values, input_dim):
     normalized_pixel_values = torch.tensor([float(p) / 255.0 for p in pixel_values])
@@ -116,9 +116,10 @@ def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: Batch
         linear_coefficients_tensor[f, r, c] = cell_coefficients
     filter_intercept = torch.zeros(num_filters) if layer.bias is None else layer.bias
     if bn_layer is not None:
-        filter_intercept += bn_layer.bias - bn_layer.weight * bn_layer.running_mean / torch.sqrt(bn_layer.running_var + bn_layer.eps)
-        linear_coefficients_tensor *= (bn_layer.weight + 1 / torch.sqrt(bn_layer.running_var + bn_layer.eps)).reshape(-1, 1, 1, 1, 1, 1)
-    intercept = filter_intercept.repeat_interleave(num_hsteps * num_wsteps).reshape(-1,1)
+        bn_bias, bn_weight, bn_mean, bn_var, bn_eps = bn_layer.bias.detach(), bn_layer.weight.detach(), bn_layer.running_mean.detach(), bn_layer.running_var.detach(), bn_layer.eps
+        filter_intercept += bn_bias - bn_weight * bn_mean / torch.sqrt(bn_var + bn_eps)
+        linear_coefficients_tensor *= (bn_weight / torch.sqrt(bn_var + bn_eps)).reshape(-1, 1, 1, 1, 1, 1)
+    intercept = filter_intercept.repeat_interleave(num_hsteps * num_wsteps).reshape(-1, 1)
     linear_coefficients = linear_coefficients_tensor.reshape((num_filters * num_hsteps * num_wsteps, -1))
     return intercept.detach(), linear_coefficients.detach()
 
@@ -226,7 +227,7 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
     return output_ub, out_alpha, added_bounds
 
 
-def ensemble_poly(layers: Sequential, input_lb: Tensor, input_ub: Tensor, best_alpha: Union[str, Dict], verbose: bool):
+def ensemble_poly(layers: Sequential, input_lb: Tensor, input_ub: Tensor, best_alpha: Union[str, Dict]):
     out_ubs = []
     alphas = []
     start_alphas = [best_alpha, "min", "half", "rand", "rand", "rand"]
@@ -238,10 +239,9 @@ def ensemble_poly(layers: Sequential, input_lb: Tensor, input_ub: Tensor, best_a
         alphas.append(out_alpha)
 
     # TODO: Chosen arbitrarily, tune this (along with start_alphas) and consider some form of evolutionary alg
-    # max_iter should be inf in main branch (since no point in giving up early if haven't successfully verified)
-    # TODO: verbose and whether max_iter is small or large should rather be set
-    #  by some (possibly global) variable determining if we're in debug mode or not
-    max_iter = 10**5
+    # Except when debugging there is no point in giving up early, since printing
+    # "not verified" gives 0 points, just like timing out does
+    max_iter = 10 if DEBUG else 10**9
     min_update_norm = 10**-4
     lr = 10**0
     for epoch in range(max_iter):
@@ -255,10 +255,10 @@ def ensemble_poly(layers: Sequential, input_lb: Tensor, input_ub: Tensor, best_a
             l1_update_norm = np.array([(alpha[k] - old_alpha[k]).abs().sum() for k in old_alpha.keys()]).sum()
             if l1_update_norm < min_update_norm:
                 out_ub, out_alpha, _ = deep_poly(layers, "rand", input_lb, input_ub)
-                print_if(f"{i}th alpha was changing too little"
-                         f"(possibly stuck in local minima), so reset to rand.", verbose)
+                dprint(f"{i}th alpha was changing too little"
+                         f"(possibly stuck in local minima), so reset to rand.")
             out_ubs[i], alphas[i] = out_ub, out_alpha
-        print_if(f"out_ubs after epoch no {epoch + 1}: {[out_ub.detach().item() for out_ub in out_ubs]}", verbose)
+        dprint(f"out_ubs after epoch no {epoch + 1}: {[out_ub.detach().item() for out_ub in out_ubs]}")
 
     return None, False
 
@@ -289,19 +289,23 @@ def print_if(msg: str, condition: bool):
         print(msg)
 
 
-def ensemble(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int, verbose=False):
+def dprint(msg: str):
+    print_if(msg, DEBUG)
+
+
+def ensemble(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int):
     start_time = datetime.now()
     best_alpha = "rand"
     for category in range(net_layers[-1].out_features):
         if category == true_label:
             continue
         layers = Sequential(*net_layers, make_comparison_layer(net_layers, true_label, adversarial_label=category))
-        best_alpha, verifiable = ensemble_poly(layers, input_lb, input_ub, best_alpha, verbose)
+        best_alpha, verifiable = ensemble_poly(layers, input_lb, input_ub, best_alpha)
         if not verifiable:
-            print_if(f"Not verified after {(datetime.now()-start_time).total_seconds()} seconds.", verbose)
+            dprint(f"Not verified after {(datetime.now()-start_time).total_seconds()} seconds.")
             return False
-        print_if(f"Category {category} beat after {(datetime.now()-start_time).total_seconds()} seconds.", verbose)
-    print_if(f"Verified after {(datetime.now() - start_time).total_seconds()} seconds.", verbose)
+        dprint(f"Category {category} beat after {(datetime.now()-start_time).total_seconds()} seconds.")
+    dprint(f"Verified after {(datetime.now() - start_time).total_seconds()} seconds.")
     return True
 
 
@@ -320,7 +324,7 @@ def analyze(net, inputs, eps, true_label):
         layers = net.layers[1:]
     input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
-    return ensemble(layers, normalized_lb, normalized_ub, true_label, VERBOSE)
+    return ensemble(layers, normalized_lb, normalized_ub, true_label)
 
 
 def main():
