@@ -147,6 +147,10 @@ def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
         return torch.rand(in_lb.shape)
     elif strategy == "min":
         return (in_ub > -in_lb).float()
+    elif strategy == "noisymin":
+        min_scale = 0.75
+        random_scales = min_scale + torch.rand(in_lb.shape) * (1 - min_scale)
+        return (in_ub > -in_lb) * random_scales
     raise ValueError(f"{strategy} is an invalid alpha-generating strategy.")
 
 
