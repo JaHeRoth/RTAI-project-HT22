@@ -5,6 +5,9 @@ examples/res.txt
 .idea/
 mnist_data/
 cifar_data/
+code/__pychache__/
+plots/
+code/my_evaluate
 
 
 ## PYCHARM gitignore
