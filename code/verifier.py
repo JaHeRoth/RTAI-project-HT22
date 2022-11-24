@@ -18,6 +18,7 @@ DEVICE = 'cpu'
 DTYPE = torch.float32
 DEBUG = False
 
+
 def transform_image(pixel_values, input_dim):
     normalized_pixel_values = torch.tensor([float(p) / 255.0 for p in pixel_values])
     if len(input_dim) > 1:
@@ -31,6 +32,7 @@ def transform_image(pixel_values, input_dim):
     assert (image >= 0).all()
     assert (image <= 1).all()
     return image
+
 
 def get_spec(spec, dataset):
     input_dim = [1, 28, 28] if dataset == 'mnist' else [3, 32, 32]
@@ -147,6 +149,10 @@ def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
         return torch.rand(in_lb.shape)
     elif strategy == "min":
         return (in_ub > -in_lb).float()
+    elif strategy == "noisymin":
+        min_scale = 0.75
+        random_scales = min_scale + torch.rand(in_lb.shape) * (1 - min_scale)
+        return (in_ub > -in_lb) * random_scales
     raise ValueError(f"{strategy} is an invalid alpha-generating strategy.")
 
 
@@ -189,6 +195,7 @@ def extract_path_alphas(alpha: Alpha, block_layer_number: int, path_name: str):
 
 
 def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Tensor, k: int, alpha: Alpha, in_shape: Size):
+    # TODO: Bugfix: concrete bounds blow up in the conv layers of path_b of the last basic block (k=8) of net10
     a_alphas, b_alphas = extract_path_alphas(alpha, k, "a"), extract_path_alphas(alpha, k, "b")
     _, out_a_alphas, a_bounds = deep_poly(layer.path_a, a_alphas, input_lb, input_ub, bounds, in_shape)
     _, out_b_alphas, b_bounds = deep_poly(layer.path_b, b_alphas, input_lb, input_ub, bounds, in_shape)
@@ -227,61 +234,49 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
     return output_ub, out_alpha, added_bounds
 
 
-def ensemble_poly(layers: Sequential, input_lb: Tensor, input_ub: Tensor, best_alpha: Union[str, Dict]):
-    out_ubs = []
-    alphas = []
-    start_alphas = [best_alpha, "min", "half", "rand", "rand", "rand"]
-    for alpha in start_alphas:
-        out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub)
-        if out_ub <= 0:
-            return out_alpha, True
-        out_ubs.append(out_ub)
-        alphas.append(out_alpha)
+def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int):
+    start_time = datetime.now()
+    remaining_labels = Tensor([c for c in range(net_layers[-1].out_features) if c != true_label]).long()
+    layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
+    alphas = ["min", "noisymin", "noisymin"]
+    out_ubs: List[Optional[Tensor]] = [None for _ in alphas]
 
-    # TODO: Chosen arbitrarily, tune this (along with start_alphas) and consider some form of evolutionary alg
+    # TODO: Arbitrary hyperparameters, further tuning is needed
     # Except when debugging there is no point in giving up early, since printing
     # "not verified" gives 0 points, just like timing out does
     max_iter = 10 if DEBUG else 10**9
-    min_update_norm = 10**-4
+    evolution_period = 5 if DEBUG else 10
     lr = 10**0
     for epoch in range(max_iter):
-        for i, (old_ub, old_alpha) in enumerate(zip(out_ubs, alphas)):
-            old_ub.backward()
-            alpha = {k: (old_alpha[k] - lr * old_alpha[k].grad).clamp(0, 1).detach().requires_grad_() for k in old_alpha.keys()}
+        for i, (old_ub, alpha) in enumerate(zip(out_ubs, alphas)):
+            if type(alpha) is not str:
+                old_ub[0].backward()
+                alpha = {k: (alpha[k] - lr * alpha[k].grad).clamp(0, 1).detach().requires_grad_() for k in alpha.keys()}
             out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub)
-            if out_ub <= 0:
-                return out_alpha, True
-            # TODO: This check never triggers and rand is terrible, so consider e.g evolutionary step after each epoch
-            l1_update_norm = np.array([(alpha[k] - old_alpha[k]).abs().sum() for k in old_alpha.keys()]).sum()
-            if l1_update_norm < min_update_norm:
-                out_ub, out_alpha, _ = deep_poly(layers, "rand", input_lb, input_ub)
-                dprint(f"{i}th alpha was changing too little"
-                         f"(possibly stuck in local minima), so reset to rand.")
+            remaining_labels = remaining_labels[out_ub > 0]
+            if len(remaining_labels) == 0:
+                dprint(f"Verified after {(datetime.now()-start_time).total_seconds()} seconds. "
+                       f"[epoch: {epoch}; i: {i}; alpha: {alpha})]")
+                return True
+            if out_ub.min() <= 0:
+                dprint(f"{len(remaining_labels)} categories left to beat: {remaining_labels}.")
+                layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
             out_ubs[i], alphas[i] = out_ub, out_alpha
-        dprint(f"out_ubs after epoch no {epoch + 1}: {[out_ub.detach().item() for out_ub in out_ubs]}")
-
-    return None, False
-
-
-def make_loss_layers(layers, true_label):
-    num_categories = layers[-1].out_features
-    comparison_layer = Linear(in_features=num_categories, out_features=num_categories - 1, bias=False)
-    comparison_layer.weight = torch.nn.Parameter(torch.Tensor(np.delete(np.eye(num_categories) - np.repeat(
-        (np.arange(num_categories) == true_label).reshape((1, -1)), num_categories, axis=0
-    ), true_label, axis=0)), requires_grad=False)
-    sum_layer = Linear(in_features=num_categories - 1, out_features=1, bias=False)
-    sum_layer.weight = torch.nn.Parameter(torch.ones((1, num_categories - 1)), requires_grad=False)
-    return comparison_layer, nn.ReLU(), sum_layer
+        dprint(f"out_ubs after epoch {epoch}: {[out_ub.detach().numpy() for out_ub in out_ubs]}")
+        if epoch % evolution_period == 0 and epoch > 0:
+            total_losses = Tensor([ReLU()(out_ub).sum() for out_ub in out_ubs])
+            alphas[torch.argmax(total_losses)] = "noisymin"
+    dprint(f"Failed to verify after {(datetime.now()-start_time).total_seconds()} seconds and {max_iter} epochs.")
+    return False
 
 
-def make_comparison_layer(net_layers: Sequential, true_label: int, adversarial_label: int):
+def with_comparison_layer(net_layers: Sequential, true_label: int, adversarial_labels: Tensor):
     num_categories = net_layers[-1].out_features
-    weight = torch.zeros(1, num_categories)
+    weight = torch.eye(num_categories)[adversarial_labels, :]
     weight[:, true_label] = -1
-    weight[:, adversarial_label] = 1
-    comparison_layer = Linear(in_features=num_categories, out_features=1, bias=False)
+    comparison_layer = Linear(in_features=num_categories, out_features=len(adversarial_labels), bias=False)
     comparison_layer.weight = torch.nn.Parameter(weight, requires_grad=False)
-    return comparison_layer
+    return Sequential(*net_layers, comparison_layer)
 
 
 def print_if(msg: str, condition: bool):
@@ -291,22 +286,6 @@ def print_if(msg: str, condition: bool):
 
 def dprint(msg: str):
     print_if(msg, DEBUG)
-
-
-def ensemble(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int):
-    start_time = datetime.now()
-    best_alpha = "rand"
-    for category in range(net_layers[-1].out_features):
-        if category == true_label:
-            continue
-        layers = Sequential(*net_layers, make_comparison_layer(net_layers, true_label, adversarial_label=category))
-        best_alpha, verifiable = ensemble_poly(layers, input_lb, input_ub, best_alpha)
-        if not verifiable:
-            dprint(f"Not verified after {(datetime.now()-start_time).total_seconds()} seconds.")
-            return False
-        dprint(f"Category {category} beat after {(datetime.now()-start_time).total_seconds()} seconds.")
-    dprint(f"Verified after {(datetime.now() - start_time).total_seconds()} seconds.")
-    return True
 
 
 def set_seed(seed: int):
@@ -324,7 +303,7 @@ def analyze(net, inputs, eps, true_label):
         layers = net.layers[1:]
     input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
-    return ensemble(layers, normalized_lb, normalized_ub, true_label)
+    return ensemble_poly(layers, normalized_lb, normalized_ub, true_label)
 
 
 def main():
