@@ -189,6 +189,7 @@ def extract_path_alphas(alpha: Alpha, block_layer_number: int, path_name: str):
 
 
 def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Tensor, k: int, alpha: Alpha, in_shape: Size):
+    # TODO: Bugfix: concrete bounds blow up in the conv layers of path_b of the last basic block (k=8) of net10
     a_alphas, b_alphas = extract_path_alphas(alpha, k, "a"), extract_path_alphas(alpha, k, "b")
     _, out_a_alphas, a_bounds = deep_poly(layer.path_a, a_alphas, input_lb, input_ub, bounds, in_shape)
     _, out_b_alphas, b_bounds = deep_poly(layer.path_b, b_alphas, input_lb, input_ub, bounds, in_shape)
