@@ -16,7 +16,7 @@ from resnet import BasicBlock
 
 DEVICE = 'cpu'
 DTYPE = torch.float32
-DEBUG = True
+DEBUG = False
 
 def transform_image(pixel_values, input_dim):
     normalized_pixel_values = torch.tensor([float(p) / 255.0 for p in pixel_values])
