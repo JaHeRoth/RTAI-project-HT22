@@ -99,7 +99,7 @@ def concretize_bounds(abstract_lb: Tensor, abstract_ub: Tensor, past_bounds: Bou
 
 
 def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: BatchNorm2d = None):
-    """:return Coefficients such that an inner product between this and flattened input (prepended by 1 for bias)
+    """:return: Coefficients such that an inner product between this and flattened input (prepended by 1 for bias)
     gives same result as flattening result of applying convolution layer (and possibly bn_layer) on input."""
     hpadding, wpadding = layer.padding
     hstride, wstride = layer.stride
@@ -195,6 +195,22 @@ def extract_path_alphas(alpha: Alpha, block_layer_number: int, path_name: str):
 
 
 def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Tensor, k: int, alpha: Alpha, in_shape: Size):
+    """
+    Call deep_poly for both paths of the BasicBlock `layer`, combining the resulting abstract bounds and
+    computing the concrete output bounds using that combination.
+    :param layer: The BasicBlock.
+    :param bounds: The abstract and concrete bounds of all layers before the current.
+    :param input_lb: The concrete lower bound of the input region to the full network we're verifying.
+    :param input_ub: Same as `input_lb`, but upper instead of lower.
+    :param k: The index of `layer`.
+    :param alpha: See the docstring of `deep_poly(...)`.
+    :param in_shape: The shape of the input `layer` will receive.
+    :return: Dict containing bounds for all layers of both paths of the BasicBlock `layer` and the
+    concrete upper and lower bound of the output of `layer`; the numerical alpha values used by the layers
+    in this block, with key corresponding to the index of `layer`, the path they belong to, and
+    the index of the corresponding layer in that path (so e.g. "2b1" for a layer at index 1 of path b
+    if `layer` has index 2).
+    """
     # TODO: Bugfix: concrete bounds blow up in the conv layers of path_b of the last basic block (k=8) of net10
     a_alphas, b_alphas = extract_path_alphas(alpha, k, "a"), extract_path_alphas(alpha, k, "b")
     _, out_a_alphas, a_bounds = deep_poly(layer.path_a, a_alphas, input_lb, input_ub, bounds, in_shape)
@@ -211,6 +227,23 @@ def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Te
 
 
 def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, in_bounds=None, in_shape=None):
+    """
+    :param layers: The sequential network (list of layers) we intend to verify.
+    :param alpha: The alpha values to use for all ReLU nodes (more specifically: a dictionary mapping
+    layer indeces to 1d-tensors of alpha values for all nodes in the corresponding ReLU layer) or a
+    string dictating the strategy with which to generate such numerical alphas for all ReLU nodes.
+    :param src_lb: The concrete lower bound of the region in which we wish to verify our full network
+    (which is a strict superset of `layers` iff `in_bounds!=None`). Used for computing all concrete bounds.
+    :param src_ub: Same as `src_lb`, just the upper instead of lower.
+    :param in_bounds: Relevant in the case of deep_poly being called recursively (thus only for ResNets),
+    containing the abstract and concrete bounds of all layers that came before the Sequential we're now
+    running DeepPoly on.
+    :param in_shape: The shape of the input to the first layer in `layers`. This equals `src_lb.shape`
+    if `in_bounds=None`, so it has to be set iff `in_bounds!=None`.
+    :return: Concrete upper bounds for the final layer in `layers`; the numerical alpha values used
+    in this run (equals `alpha` if that already contained the numerical values, rather than just a
+    strategy string); the abstract and concrete bounds of all layers in `layers`.
+    """
     in_shapes = infer_layer_input_dimensions(layers, src_lb if in_shape is None else torch.zeros(in_shape))
     src_lb, src_ub = src_lb.flatten(), src_ub.flatten()
     bounds: Bounds = in_bounds.copy() if in_bounds is not None else []
@@ -235,6 +268,10 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
 
 
 def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int):
+    """Optimize multiple combinations of alphas simultaenously to allow DeepPoly to rule out all
+    other categories than `true_label`, ruling out a category for good once any alpha value does so.
+    :return: Whether we for each category that wasn't `true_label` found an alpha that ruled it out
+    for all inputs (to `net_layers`) between `input_lb` and `input_ub`."""
     start_time = datetime.now()
     remaining_labels = Tensor([c for c in range(net_layers[-1].out_features) if c != true_label]).long()
     layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
@@ -271,6 +308,9 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
 
 
 def with_comparison_layer(net_layers: Sequential, true_label: int, adversarial_labels: Tensor):
+    """:return: `net_layers` with an extra layer at the end that for each category in
+    `adversarial_labels` has a node whose value is the output for that category minus the
+    output for the `true_label` category."""
     num_categories = net_layers[-1].out_features
     weight = torch.eye(num_categories)[adversarial_labels, :]
     weight[:, true_label] = -1
@@ -280,15 +320,18 @@ def with_comparison_layer(net_layers: Sequential, true_label: int, adversarial_l
 
 
 def print_if(msg: str, condition: bool):
+    """Print `msg` if `condition` is True."""
     if condition:
         print(msg)
 
 
 def dprint(msg: str):
+    """Print `msg` if `DEBUG` is True."""
     print_if(msg, DEBUG)
 
 
 def set_seed(seed: int):
+    """Derandomize PyTorch and Numpy (between runs)."""
     np.random.seed(seed)
     torch.manual_seed(seed)
 
