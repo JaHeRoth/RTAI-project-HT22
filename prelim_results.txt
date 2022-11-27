@@ -1,0 +1,28 @@
+net,test case,ground truth,your output,your runtime,your point
+net1,img3_0.0091.txt,verified,verified,1.328,1
+net1,img6_0.0153.txt,verified,verified,1.367,1
+net2,img3_0.2301.txt,not verified,timeout (not verified),60,0
+net2,img8_0.2009.txt,not verified,timeout (not verified),60,0
+net3,img10_0.0041.txt,not verified,timeout (not verified),60,0
+net3,img3_0.0090.txt,verified,verified,0.726,1
+net4,img4_0.1502.txt,verified,verified,8.53,1
+net4,img9_0.0097.txt,verified,verified,1.015,1
+net5,img2_0.0588.txt,verified,timeout (not verified),60,0
+net5,img9_0.0159.txt,not verified,timeout (not verified),60,0
+net6,img3_0.0315.txt,verified,timeout (not verified),60,0
+net6,img5_0.0103.txt,not verified,timeout (not verified),60,0
+net6,img8_0.0126.txt,verified,verified,2.313,1
+net7,img2_0.0344.txt,verified,verified,2.102,1
+net7,img6_0.2004.txt,verified,verified,8.72,1
+net7,img9_0.2502.txt,not verified,timeout (not verified),60,0
+net8,img10_0.0092.txt,not verified,timeout (not verified),60,0
+net8,img3_0.0082.txt,verified,timeout (not verified),60,0
+net8,img7_0.0078.txt,not verified,timeout (not verified),60,0
+net9,img1_0.0037.txt,verified,verified,43.824,1
+net9,img7_0.0042.txt,verified,verified,44.022,1
+net9,img9_0.0043.txt,not verified,verified,44.029,-2
+net10,img10_0.0017.txt,verified,timeout (not verified),60,0
+net10,img3_0.0015.txt,not verified,timeout (not verified),60,0
+net10,img6_0.0016.txt,verified,timeout (not verified),60,0
+
+total points: 8
