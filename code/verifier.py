@@ -66,6 +66,12 @@ Alpha = Union[str, Dict[Union[str, int], Tensor]]
 
 
 def cased_mul_w_bias(lhs_with_bias_column: Tensor, pos_rhs: Tensor, neg_rhs: Tensor):
+    """:return: A sort of affine product between `lhs_with_bias_column` and `pos_rhs`
+    and `neg_rhs`, where which of the latter is used for a specific scalar multiplication
+    depends on the sign of the cell in `lhs_with_bias_column` which is involved.
+    More specifically, cell [i, j] of output is `lhs_with_bias_column[i, 0]` plus the sum
+    (over k) of the elementwise product between `lhs_with_bias_column[i, k+1]` and
+    `pos_rhs[k, j]` if `lhs_with_bias_column[i, k] >= 0` else `neg_rhs[k, j]`."""
     bias_to_bias_row = torch.hstack([torch.ones(1, 1), torch.zeros(1, pos_rhs.shape[1] - 1)])
     pos_rhs_with_b2b_row = torch.vstack([bias_to_bias_row, pos_rhs])
     neg_rhs_with_b2b_row = torch.vstack([bias_to_bias_row, neg_rhs])
@@ -74,6 +80,25 @@ def cased_mul_w_bias(lhs_with_bias_column: Tensor, pos_rhs: Tensor, neg_rhs: Ten
 
 
 def backtrack(direct_lb: Tensor, direct_ub: Tensor, past_bounds: Bounds):
+    """
+    Iteratively compute the affine coefficients used to formulate abstract bounds of
+    some target-layer in terms of the input to the (sub)network.
+    :param direct_lb: The abstract lower bound (affine coefficients) of the target
+    layer in terms of our last layer (the one generating `past_bounds[-1]`), thus
+    our starting point for computing the abstract lower bound of the target layer
+    on the (sub)network input (layer).
+    :param direct_ub: Same as `direct_lb`, but for upper bound.
+    :param past_bounds: The abstract and concrete upper and lower bounds of all
+    layers we should backtrack through (to update `direct_lb` and `direct_ub`).
+    Note that these layers can be BasicBlocks, which require recursing.
+    :return: Abstract upper and lower bounds of some layer in terms of some earlier
+    layer. This earlier layer is either the input to the network or the input to the
+    BasicBlock (subnetwork), rather than the last layer before the later layer.
+    More specifically, two matrices, one for the lower bounds and one for the upper bounds,
+    where the cell [i, j+1] gives the coefficient of the j-th node of the earlier layer
+    used in the corresponding abstract bound of node i of the later layer while [i, 0]
+    gives its intercept.
+    """
     # Possible optimization: concretize every n layers to see if concrete lower is above 0 or concrete upper is below 0
     for past_bound in reversed(past_bounds):
         if type(past_bound) is tuple:
@@ -91,6 +116,10 @@ def backtrack(direct_lb: Tensor, direct_ub: Tensor, past_bounds: Bounds):
 
 
 def concretize_bounds(abstract_lb: Tensor, abstract_ub: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
+    """:return: Concrete upper and lower bounds of a layer given its abstract lower (`abstract_lb`)
+    and upper (`abstract_ub`) on the layer directly before it, the abstract and concrete upper and
+    lower bounds of all layers before it and the concrete bounds of the network's input region we
+    seek to verify."""
     direct_lb, direct_ub = backtrack(abstract_lb, abstract_ub, past_bounds)
     input_lb, input_ub = input_lb.reshape(-1, 1), input_ub.reshape(-1, 1)
     concrete_lb = cased_mul_w_bias(direct_lb, input_lb, input_ub).flatten()
@@ -99,8 +128,14 @@ def concretize_bounds(abstract_lb: Tensor, abstract_ub: Tensor, past_bounds: Bou
 
 
 def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: BatchNorm2d = None):
-    """:return: Coefficients such that an inner product between this and flattened input (prepended by 1 for bias)
-    gives same result as flattening result of applying convolution layer (and possibly bn_layer) on input."""
+    """
+    :param layer: Convolutional layer.
+    :param in_height: Height of the images passed to this layer (from the layer before it).
+    :param in_width: Width of the images passed to this layer (from the layer before it).
+    :param bn_layer: Batch normalization layer directly following convolutional layer (if applicable).
+    :return: Coefficients such that an inner product between this and flattened input (prepended by 1 for bias)
+    gives same result as flattening result of applying convolution layer (and possibly bn_layer) on input.
+    """
     hpadding, wpadding = layer.padding
     hstride, wstride = layer.stride
     num_filters, depth, filter_height, filter_width = layer.weight.shape
@@ -127,22 +162,33 @@ def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: Batch
 
 
 def affine_bounds(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
+    """:return: Abstract and concrete upper and lower bounds of an affine layer given
+    its intercept (`bias`) and linear coefficient (`coefficients`) on the layer directly
+    before it, the abstract and concrete lower and upper bounds of all layers before it
+    and the concrete upper and lower bounds of the region of input data that should be
+    verified for this network."""
     abstract_lower = abstract_upper = torch.hstack([bias.reshape(-1, 1), coefficients])
     concrete_lower, concrete_upper = concretize_bounds(abstract_lower, abstract_upper, past_bounds, input_lb, input_ub)
     return abstract_lower, abstract_upper, concrete_lower, concrete_upper
 
 
 def fc_bounds(layer: Linear, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
+    """:return: Abstract and concrete upper and lower bounds of the fully connected `layer`."""
     bias = layer.bias.detach() if layer.bias is not None else torch.zeros(layer.out_features)
     return affine_bounds(bias, layer.weight.detach(), past_bounds, input_lb, input_ub)
 
 
 def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor, in_height: int, in_width: int, bn_layer: Optional[BatchNorm2d]):
+    """:return: Abstract and concrete upper and lower bounds of the convolutional layer `layer`
+    and if applicable the batch normalization layer `bn_layer` directly following it, uppon
+    rewriting (and thus treating) both of these as a single fully connected layer."""
     intercept, coefficients = conv_to_affine(layer, in_height, in_width, bn_layer)
     return affine_bounds(intercept, coefficients, past_bounds, input_lb, input_ub)
 
 
 def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
+    """:return: A tensor with the same shape as the input to the current ReLU layer,
+    with all its values in [0,1] generated according to the provided `strategy`."""
     if strategy == "half":
         return torch.ones(in_lb.shape) / 2
     elif strategy == "rand":
@@ -157,6 +203,9 @@ def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
 
 
 def relu_bounds(past_bounds: Bounds, alpha: Union[Tensor, str]):
+    """:return: Abstract (affine coefficients on the layer directly before it) and concrete
+    upper and lower bounds of ReLU layer given its `alpha` and the abstract and concrete
+    upper and lower bounds of all layers before it."""
     if type(past_bounds[-1]) is dict:
         prev_lb, prev_ub = past_bounds[-1]["lb"], past_bounds[-1]["ub"]
     else:
@@ -178,7 +227,9 @@ def relu_bounds(past_bounds: Bounds, alpha: Union[Tensor, str]):
     return (abstract_lb, abstract_ub, concrete_lb, concrete_ub), alpha
 
 
-def infer_layer_input_dimensions(layers: Sequential, input_lb: Tensor):
+def infer_layer_input_shapes(layers: Sequential, input_lb: Tensor):
+    """:return: A list of Size objects (shape tuples) that has at index i
+    the shape of the input `layers[i]` will receive."""
     current = input_lb
     dims: List[Size] = []
     for layer in layers:
@@ -188,6 +239,11 @@ def infer_layer_input_dimensions(layers: Sequential, input_lb: Tensor):
 
 
 def extract_path_alphas(alpha: Alpha, block_layer_number: int, path_name: str):
+    """Expand virtual key hierarchy of `alpha` (if it is a dict, else just return it as is)
+    for the provided layer number and path name.
+    :return: `alpha` if it is a string. Otherwise (if it is a dict), the entries belonging
+    to path `path_name` of layer number `block_layer_number` with those localizations removed
+    from the corresponding keys (leaving only the index of that sublayer within this path)."""
     if type(alpha) == str:
         return alpha
     return {int(re.findall(r'\d+', key)[-1]): value for key, value in alpha.items()
@@ -244,7 +300,7 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
     in this run (equals `alpha` if that already contained the numerical values, rather than just a
     strategy string); the abstract and concrete bounds of all layers in `layers`.
     """
-    in_shapes = infer_layer_input_dimensions(layers, src_lb if in_shape is None else torch.zeros(in_shape))
+    in_shapes = infer_layer_input_shapes(layers, src_lb if in_shape is None else torch.zeros(in_shape))
     src_lb, src_ub = src_lb.flatten(), src_ub.flatten()
     bounds: Bounds = in_bounds.copy() if in_bounds is not None else []
     out_alpha: Dict[Union[str, int], Tensor] = {}
