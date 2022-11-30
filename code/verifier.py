@@ -20,6 +20,10 @@ DEBUG = False
 
 
 def transform_image(pixel_values, input_dim):
+    '''
+    Transform the input image to the correct, normalized format.
+    In the case of the cifar10 dataset, additionally permute the dimensions.
+    '''
     normalized_pixel_values = torch.tensor([float(p) / 255.0 for p in pixel_values])
     if len(input_dim) > 1:
         input_dim_in_hwc = (input_dim[1], input_dim[2], input_dim[0])
@@ -394,12 +398,15 @@ def set_seed(seed: int):
 
 def analyze(net, inputs, eps, true_label):
     set_seed(0)
+    # We extract the normalization layer to work with the already normalized inputs, since our epsilons are also in the normalized space
     if type(net) == NormalizedResnet:
         normalizer = net.normalization
+        # Flatten the nested ResNet by unfolding Sequential layers
         layers = Sequential(*itertools.chain.from_iterable([(layer if type(layer) is Sequential else [layer]) for layer in net.resnet]))
     else:
         normalizer = net.layers[0]
         layers = net.layers[1:]
+    # We only have to account for valid input pixels, so we clamp back to [0, 1]
     input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
     return ensemble_poly(layers, normalized_lb, normalized_ub, true_label)
@@ -419,6 +426,7 @@ def main():
 
     outs = net(inputs)
     pred_label = outs.max(dim=1)[1].item()
+    # We only verify the network on examples that it can correctly classify
     assert pred_label == true_label
 
     if analyze(net, inputs, eps, true_label):
