@@ -357,13 +357,13 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
         for i, (old_ub, alpha) in enumerate(zip(out_ubs, alphas)):
             # After the first epoch, we initialized the alphas for each strategy and do a Gradient Descent step
             if type(alpha) is not str:
-                # TODO: According to documentation, gradients do get aggregated over time, do we need to null them here for each epoch? 
+                # TODO?: According to documentation, gradients do get aggregated over time, do we need to null them here for each epoch? 
                 # Meaning alpha[k].grad.zero_() for k in alpha.keys()?
                 # Or is this solved by our design that we always detach the alphas and then build a new graph in the next forward pass? Would investigate.
 
                 # We always optimize/differentiate w.r.t. the first unbeaten competitive class comparison
                 # The resulting gradient is stored in the alpha values, which are the leafes of the computational graph
-                # TODO: Just for myself, check that the index here does not need to be updated, i.e. that the first unbeaten class is always at index 0 because
+                # TODO?: Just for myself, check that the index here does not need to be updated, i.e. that the first unbeaten class is always at index 0 because
                 # we always remove the beaten classes. Should happen through changing the comparison layer and the execution of deep_poly, but just to be sure.
                 old_ub[0].backward()
                 # Gradient descent step
@@ -380,9 +380,9 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
             if out_ub.min() <= 0:
                 # We found an alpha that ruled out at least one category, so we update the comparison layer
                 dprint(f"{len(remaining_labels)} categories left to beat: {remaining_labels}.")
-                # TODO: Dumb idea, but is there anything in the comp graph of layers that we lose when we do this override?
+                # TODO?: Dumb idea, but is there anything in the comp graph of layers that we lose when we do this override?
                 # Or is everything solved by the fact, that our next run of deep_poly will build a new comp graph?
-                # TODO: Also, maybe another stupid thought, but does this even help computation in any way? Since we'll optimize
+                # TODO?: Also, maybe another stupid thought, but does this even help computation in any way? Since we'll optimize
                 # the alphas only regarding the first to-be-beaten category anyways, so the edges that fall away here don't contribute anyways?
                 # Of course it's very neat with the current implementation, but I don't know how big the overhead of rebuilding the network is.
                 layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
