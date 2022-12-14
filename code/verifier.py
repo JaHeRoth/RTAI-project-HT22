@@ -217,13 +217,38 @@ def relu_bounds(past_bounds: Bounds, alpha: Union[Tensor, str]):
     if type(alpha) == str:
         alpha = generate_alpha(prev_lb, prev_ub, strategy=alpha).requires_grad_()
     in_len = len(prev_lb)
-    upper_slope = prev_ub / (prev_ub - prev_lb)
     lb_bias, ub_bias, lb_scaling, ub_scaling = [torch.zeros(in_len) for _ in range(4)]
     lb_scaling[prev_lb >= 0], ub_scaling[prev_lb >= 0] = 1, 1
+
+    # Upper and lower bounds of crossing ReLUs, secured against numeric
+    # underflow in the alpha gradients through strategic detaching
     crossing_mask = (prev_lb < 0) & (prev_ub > 0)
     lb_scaling[crossing_mask] = alpha[crossing_mask]
-    ub_scaling[crossing_mask] = upper_slope[crossing_mask]
-    ub_bias[crossing_mask] = (-upper_slope * prev_lb)[crossing_mask]
+    numerically_unstable = prev_lb.abs() < 10 ** -5
+    stable_crossing = crossing_mask & ~numerically_unstable
+    unstable_crossing = crossing_mask & numerically_unstable
+    # I'm unsure why, but calling detach_() after these lines on the unstable
+    # indices didn't hinder the backpropagation to use them for computing gradients
+    # of past alphas, thus didn't help avoid the nan alpha gradients.
+    # A possible explanation is that the computation graph creates shortcuts that bypass
+    # these nodes, as they aren't leaf nodes anyway, thus that when we detach them we're
+    # not actually cutting the connection between past alphas and ouptut caused by these
+    # computations: https://youtu.be/MswxJw-8PvE?t=224
+    if unstable_crossing.any():
+        dprint(f"Encountered {unstable_crossing.sum()} dangerously small term(s) "
+               f"(<e-5) in relu_bounds, thus detaching this/these to avoid under-/overflows.")
+    stable_lb = prev_lb[stable_crossing]
+    stable_ub = prev_ub[stable_crossing]
+    unstable_lb = prev_lb[unstable_crossing].detach()
+    unstable_ub = prev_ub[unstable_crossing].detach()
+    upper_slope = torch.zeros(prev_lb.shape)
+    upper_slope[stable_crossing] = (stable_ub / (stable_ub - stable_lb))
+    ub_scaling[stable_crossing] = upper_slope[stable_crossing]
+    ub_bias[stable_crossing] = (-upper_slope[stable_crossing] * stable_lb)
+    upper_slope[unstable_crossing] = (unstable_ub / (unstable_ub - unstable_lb))
+    ub_scaling[unstable_crossing] = upper_slope[unstable_crossing]
+    ub_bias[unstable_crossing] = (-upper_slope[unstable_crossing] * unstable_lb)
+
     abstract_lb = torch.hstack([lb_bias.reshape(-1, 1), lb_scaling.diag()])
     abstract_ub = torch.hstack([ub_bias.reshape(-1, 1), ub_scaling.diag()])
     concrete_lb = abstract_lb[:, 0] + abstract_lb[:, 1:] @ prev_lb
@@ -366,8 +391,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 # TODO?: Just for myself, check that the index here does not need to be updated, i.e. that the first unbeaten class is always at index 0 because
                 # we always remove the beaten classes. Should happen through changing the comparison layer and the execution of deep_poly, but just to be sure.
                 old_ub[0].backward()
-                # Gradient descent step
-                alpha = {k: (alpha[k] - learning_rate * alpha[k].grad).clamp(0, 1).detach().requires_grad_() for k in alpha.keys()}
+                alpha = {k: (ten - learning_rate * ten.grad).clamp(0, 1).detach().requires_grad_() for k, ten in alpha.items()}
             out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub)
             # TODO: Are we satisfied with a tie? Or do we need to be strictly better? Could be an (unlikely) error source
             remaining_labels = remaining_labels[out_ub > 0]
@@ -443,7 +467,9 @@ def analyze(net, inputs, eps, true_label):
     # We only have to account for valid input pixels, so we clamp back to [0, 1]
     input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
-    return ensemble_poly(layers, normalized_lb, normalized_ub, true_label)
+    # Ensure we crash (which counts as not verified) if gradients are nan or inf
+    with torch.autograd.set_detect_anomaly(True):
+        return ensemble_poly(layers, normalized_lb, normalized_ub, true_label)
 
 
 def main():
