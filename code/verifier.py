@@ -16,7 +16,7 @@ from resnet import BasicBlock
 
 DEVICE = 'cpu'
 DTYPE = torch.float32
-DEBUG = False
+DEBUG = True
 
 
 def transform_image(pixel_values, input_dim):
@@ -186,7 +186,9 @@ def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: 
     """:return: Abstract and concrete upper and lower bounds of the convolutional layer `layer`
     and if applicable the batch normalization layer `bn_layer` directly following it, uppon
     rewriting (and thus treating) both of these as a single fully connected layer."""
+    st = datetime.now()
     intercept, coefficients = conv_to_affine(layer, in_height, in_width, bn_layer)
+    dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds on conv_to_affine.")
     return affine_bounds(intercept, coefficients, past_bounds, input_lb, input_ub)
 
 
@@ -305,11 +307,17 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
     in this run (equals `alpha` if that already contained the numerical values, rather than just a
     strategy string); the abstract and concrete bounds of all layers in `layers`.
     """
+    st = datetime.now()
     in_shapes = infer_layer_input_shapes(layers, src_lb if in_shape is None else torch.zeros(in_shape))
+    dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds on infer_layer_input_shapes.")
+    st = datetime.now()
     src_lb, src_ub = src_lb.flatten(), src_ub.flatten()
+    dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds flattening concrete input bounds.")
     bounds: Bounds = in_bounds.copy() if in_bounds is not None else []
     out_alpha: Dict[Union[str, int], Tensor] = {}
+    outer_st = datetime.now()
     for k, layer in enumerate(layers):
+        st = datetime.now()
         if type(layer) == Linear:
             bounds.append(fc_bounds(layer, bounds, src_lb, src_ub))
         elif type(layer) == Conv2d:
@@ -323,6 +331,8 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             block_bounds, block_alphas = res_bounds(layer, bounds, src_lb, src_ub, k, alpha, in_shapes[k])
             out_alpha.update(block_alphas)
             bounds.append(block_bounds)
+        dprint(f"Layer {k} of type {type(layer)} took {(datetime.now()-st).total_seconds()} seconds.")
+    dprint(f"Spent {(datetime.now() - outer_st).total_seconds()} seconds passing through all layers.")
     output_ub = bounds[-1][3]
     added_bounds = bounds if in_bounds is None else bounds[len(in_bounds):]
     return output_ub, out_alpha, added_bounds
@@ -365,10 +375,14 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 # The resulting gradient is stored in the alpha values, which are the leafes of the computational graph
                 # TODO?: Just for myself, check that the index here does not need to be updated, i.e. that the first unbeaten class is always at index 0 because
                 # we always remove the beaten classes. Should happen through changing the comparison layer and the execution of deep_poly, but just to be sure.
+                st = datetime.now()
                 old_ub[0].backward()
                 # Gradient descent step
                 alpha = {k: (alpha[k] - learning_rate * alpha[k].grad).clamp(0, 1).detach().requires_grad_() for k in alpha.keys()}
+                dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds on backprop and updating.")
+            st = datetime.now()
             out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub)
+            dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds running DeepPoly (one forward pass).")
             # TODO: Are we satisfied with a tie? Or do we need to be strictly better? Could be an (unlikely) error source
             remaining_labels = remaining_labels[out_ub > 0]
             if len(remaining_labels) == 0:
