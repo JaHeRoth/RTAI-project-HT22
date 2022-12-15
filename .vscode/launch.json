@@ -11,7 +11,12 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "args": ["--net", "net1", "--spec", "../examples/net1/img1_0.0500.txt"],
+            // Debugging FC nets
+            "args": ["--net", "net3", "--spec", "../examples/net3/img1_0.0065.txt"],
+            // Debugging CNN nets
+            // "args": ["--net", "net4", "--spec", "../examples/net4/img2_0.2290.txt"],
+            // Debugging ResNets
+            // "args": ["--net", "net8", "--spec", "../examples/net8/img1_0.0096.txt"],
             "cwd": "${workspaceFolder}/code"
         }
     ]

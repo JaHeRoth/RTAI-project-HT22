@@ -124,6 +124,7 @@ def concretize_bounds(abstract_lb: Tensor, abstract_ub: Tensor, past_bounds: Bou
     and upper (`abstract_ub`) on the layer directly before it, the abstract and concrete upper and
     lower bounds of all layers before it and the concrete bounds of the network's input region we
     seek to verify."""
+    # input_lb & input_ub are still src_lb & src_ub, so the original input region
     direct_lb, direct_ub = backtrack(abstract_lb, abstract_ub, past_bounds)
     input_lb, input_ub = input_lb.reshape(-1, 1), input_ub.reshape(-1, 1)
     concrete_lb = cased_mul_w_bias(direct_lb, input_lb, input_ub).flatten()
@@ -171,6 +172,8 @@ def affine_bounds(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input
     before it, the abstract and concrete lower and upper bounds of all layers before it
     and the concrete upper and lower bounds of the region of input data that should be
     verified for this network."""
+    # input_lb & input_ub are just the src_lb & src_ub of the first layer in the network
+    # Concatinates the bias of a node with the weights of the edges coming into it
     abstract_lower = abstract_upper = torch.hstack([bias.reshape(-1, 1), coefficients])
     concrete_lower, concrete_upper = concretize_bounds(abstract_lower, abstract_upper, past_bounds, input_lb, input_ub)
     return abstract_lower, abstract_upper, concrete_lower, concrete_upper
@@ -178,16 +181,20 @@ def affine_bounds(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input
 
 def fc_bounds(layer: Linear, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
     """:return: Abstract and concrete upper and lower bounds of the fully connected `layer`."""
+    # input_lb & input_ub are just the src_lb & src_ub of the first layer in the network
+    # Extract the bias and weights of the layer and hand them off to affine_bounds
     bias = layer.bias.detach() if layer.bias is not None else torch.zeros(layer.out_features)
-    return affine_bounds(bias, layer.weight.detach(), past_bounds, input_lb, input_ub)
+    weights = layer.weight.detach()
+    return affine_bounds(bias, weights, past_bounds, input_lb, input_ub)
 
 
 def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor, in_height: int, in_width: int, bn_layer: Optional[BatchNorm2d]):
     """:return: Abstract and concrete upper and lower bounds of the convolutional layer `layer`
-    and if applicable the batch normalization layer `bn_layer` directly following it, uppon
+    and if applicable the batch normalization layer `bn_layer` directly following it, upon
     rewriting (and thus treating) both of these as a single fully connected layer."""
-    intercept, coefficients = conv_to_affine(layer, in_height, in_width, bn_layer)
-    return affine_bounds(intercept, coefficients, past_bounds, input_lb, input_ub)
+    # Transform the conv (and batch) layer to a fc layer, calculate its bias and weights
+    bias, weights = conv_to_affine(layer, in_height, in_width, bn_layer)
+    return affine_bounds(bias, weights, past_bounds, input_lb, input_ub)
 
 
 def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
@@ -332,8 +339,12 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
     in this run (equals `alpha` if that already contained the numerical values, rather than just a
     strategy string); the abstract and concrete bounds of all layers in `layers`.
     """
+    # in_shapes is a list of shapes for each layer in the network
+    # if in_shape is set, we are in a ResNet and only look at the input shape of the first layer
     in_shapes = infer_layer_input_shapes(layers, src_lb if in_shape is None else torch.zeros(in_shape))
     src_lb, src_ub = src_lb.flatten(), src_ub.flatten()
+    # We start with empty bounds for the network, unless we are 
+    # in a ResNet, in which case we need to pass in the bounds because it doesn't see the previous layers
     bounds: Bounds = in_bounds.copy() if in_bounds is not None else []
     out_alpha: Dict[Union[str, int], Tensor] = {}
     for k, layer in enumerate(layers):
@@ -341,8 +352,10 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             bounds.append(fc_bounds(layer, bounds, src_lb, src_ub))
         elif type(layer) == Conv2d:
             in_height, in_width = in_shapes[k][-2:]
+            # We look at convolutions and batch_norms in one go, so we need to check if the next layer
             bn_layer = layers[k+1] if len(layers) > k + 1 and type(layers[k+1]) == BatchNorm2d else None
             bounds.append(conv_bounds(layer, bounds, src_lb, src_ub, in_height, in_width, bn_layer))
+            # We then skip the next layer since we do nothing for BatchNorm2d layers
         elif type(layer) == ReLU:
             bound, out_alpha[k] = relu_bounds(bounds, alpha[k] if type(alpha) == dict else alpha)
             bounds.append(bound)
@@ -350,7 +363,12 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             block_bounds, block_alphas = res_bounds(layer, bounds, src_lb, src_ub, k, alpha, in_shapes[k])
             out_alpha.update(block_alphas)
             bounds.append(block_bounds)
+    # TODO: What are the first two elements of bounds?
+    # [0] abstract lower bound, [1] abstract upper bound, 
+    # [2] concrete lower bound, [3] concrete upper bound?
+    # Extract the concrete upper bounds of the last layer to return
     output_ub = bounds[-1][3]
+    # Return all the newly added abstract and concrete bounds as well
     added_bounds = bounds if in_bounds is None else bounds[len(in_bounds):]
     return output_ub, out_alpha, added_bounds
 
@@ -394,6 +412,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 # TODO?: Just for myself, check that the index here does not need to be updated, i.e. that the first unbeaten class is always at index 0 because
                 # we always remove the beaten classes. Should happen through changing the comparison layer and the execution of deep_poly, but just to be sure. -> Done
                 old_ub[0].backward()
+                # TODO: Use an optimizer instead of manually updating the alphas?
                 alpha = {k: (ten - learning_rate * ten.grad).clamp(0, 1).detach().requires_grad_() for k, ten in alpha.items()}
             out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub)
             # TODO: Are we satisfied with a tie? Or do we need to be strictly better? Could be an (unlikely) error source
@@ -418,7 +437,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
         dprint(f"out_ubs after epoch {epoch}: {[out_ub.detach().numpy() for out_ub in out_ubs]}")
         # Do a little bit of evolution, i.e. mutate the worst performing alpha after some epochs
         if epoch % evolution_period == 0 and epoch > 0:
-            # TODO: Is this a typo or am I stupid, the extra brackets after ReLU()?
+            # TODO?: Is this a typo or am I stupid, the extra brackets after ReLU()? -> Works
             total_losses = Tensor([ReLU()(out_ub).sum() for out_ub in out_ubs])
             # Worst performing strategy will be reinitialized with a noisy min strategy
             alphas[torch.argmax(total_losses)] = "noisymin"
@@ -465,7 +484,7 @@ def analyze(net, inputs, eps, true_label):
     # TODO: Some networks also have a flattening layer which seems irrelevant for our purposes, could we extract that too? Possible performance gain?
     if type(net) == NormalizedResnet:
         normalizer = net.normalization
-        # Flatten the nested ResNet by unfolding Sequential layers
+        # Flatten the nested ResNet by unfolding Sequential layers (Keeps the BasicBlock layers intact)
         layers = Sequential(*itertools.chain.from_iterable([(layer if type(layer) is Sequential else [layer]) for layer in net.resnet]))
     else:
         normalizer = net.layers[0]
