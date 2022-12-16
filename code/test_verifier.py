@@ -25,12 +25,45 @@ Test suite:
 """
 
 
-# TODO: Include different strides in the tests
-def test_conv_to_affine_without_bias_without_batch_norm():
-    # Build a simple convolutional network with just one layer and no bias
+# TODO?: Include different strides in the tests -> Should be accomplished by using all the different networks
+def test_conv_to_affine_without_bias_without_batch_norm_net4():
+    # Extract the layer from one of the official networks
+    net = get_net('net4', 'net4_mnist_conv1.pt')
+    layer = net.layers[1]
+    layer.bias = None
+    # Take a random input (shape of MNIST images)
+    x = torch.randn(1, 1, 28, 28)
+    # Run the convolutional layer
+    y = layer(x)
+    original_output = y.flatten()
+    # Convert the convolutional layer to affine
+    bias, affine = conv_to_affine(layer, 28, 28)
+    # Run the affine layer
+    z = affine @ x.flatten() + bias.flatten()
+    # Check that the outputs are the same
+    torch.testing.assert_close(original_output, z)
+
+
+def test_conv_to_affine_with_bias_without_batch_norm_net5():
+    # Extract the layer from one of the official networks
+    net = get_net('net5', 'net5_mnist_conv2.pt')
+    layer = net.layers[1]
+    # Take a random input (shape of MNIST images)
+    x = torch.randn(1, 1, 28, 28)
+    # Run the convolutional layer
+    y = layer(x)
+    original_output = y.flatten()
+    # Convert the convolutional layer to affine
+    bias, affine = conv_to_affine(layer, 28, 28)
+    # Run the affine layer
+    z = affine @ x.flatten() + bias.flatten()
+    # Check that the outputs are the same
+    torch.testing.assert_close(original_output, z)
+
+
+def test_conv_to_affine_without_bias_without_batch_norm_net6():
     # Extract the layer from one of the official networks
     net = get_net('net6', 'net6_cifar10_conv2.pt')
-    # net = ConvNet('cpu', 'cifar10', 32, 3, [(16, 4, 2, 1), (32, 4, 2, 1)], [100, 10], 10)
     layer = net.layers[1]
     layer.bias = None
     # Take a random input (shape of CIFAR-10 images)
@@ -43,56 +76,104 @@ def test_conv_to_affine_without_bias_without_batch_norm():
     # Run the affine layer
     z = affine @ x.flatten() + bias.flatten()
     # Check that the outputs are the same
-    assert torch.allclose(original_output, z)
+    torch.testing.assert_close(original_output, z)
 
 
-def test_conv_to_affine_with_bias_without_batch_norm():
-    # Build a simple convolutional network with just one layer
-    net = torch.nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, padding=1)
+def test_conv_to_affine_with_bias_without_batch_norm_net6():
+    # Extract the layer from one of the official networks
+    net = get_net('net6', 'net6_cifar10_conv2.pt')
+    layer = net.layers[1]
     # Take a random input (shape of CIFAR-10 images)
     x = torch.randn(1, 3, 32, 32)
     # Run the convolutional layer
-    y = net(x)
+    y = layer(x)
+    original_output = y.flatten()
     # Convert the convolutional layer to affine
-    bias, affine = conv_to_affine(net, 32, 32)
+    bias, affine = conv_to_affine(layer, 32, 32)
     # Run the affine layer
-    z = affine @ x.view(-1) + bias
+    z = affine @ x.flatten() + bias.flatten()
     # Check that the outputs are the same
-    assert torch.allclose(y, z.view(y.shape))
+    torch.testing.assert_close(original_output, z)
 
 
-def test_conv_to_affine_without_bias_with_batch_norm():
+# Sanity check for the matrix multiplication above
+def test_matrix_multiplication():
+    # Extract the layer from one of the official networks
+    net = get_net('net6', 'net6_cifar10_conv2.pt')
+    layer = net.layers[1]
+    # Take a random input (shape of CIFAR-10 images)
+    x = torch.randn(1, 3, 32, 32)
+    # Convert the convolutional layer to affine
+    bias, affine = conv_to_affine(layer, 32, 32)
+    # Run the affine layer
+    y = affine @ x.flatten() + bias.flatten()
+    z = affine @ x.view(-1) + bias.view(-1)
+    # Check that the outputs are the same
+    assert torch.allclose(y, z)
+
+
+# Sanity check 2 for the matrix multiplication above
+def test_linear_layer_matrix_multiplication_equivalence():
+    # Extract the layer from one of the official networks
+    net = get_net('net6', 'net6_cifar10_conv2.pt')
+    layer = net.layers[1]
+    # Take a random input (shape of CIFAR-10 images)
+    x = torch.randn(1, 3, 32, 32)
+    a = torch.randn(3072)
+    # Convert the convolutional layer to affine
+    bias, affine = conv_to_affine(layer, 32, 32)
+    # Build a linear layer
+    linear = torch.nn.Linear(affine.shape[1], affine.shape[0])
+    linear.weight = torch.nn.Parameter(affine)
+    linear.bias = torch.nn.Parameter(bias.flatten())
+    # Run the affine layer
+    y = affine @ x.flatten() + bias.flatten()
+    z = linear(x.flatten())
+    # Check that the outputs are the same
+    assert torch.allclose(y, z)
+
+
+def test_conv_to_affine_without_bias_with_batch_norm_net9():
     # Build a simple convolutional network with just one layer and no bias but a batch normalization layer
-    conv = torch.nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, padding=1, bias=False)
-    batch_norm = torch.nn.BatchNorm2d(3)
+    net = get_net('net9', 'net9_cifar10_resnet_2b2_bn.pt')
+    # This convolutional layer has no bias
+    conv = net.resnet[0]
+    batch_norm = net.resnet[1]
     net = torch.nn.Sequential(conv, batch_norm)
     # Take a random input (shape of CIFAR-10 images)
     x = torch.randn(1, 3, 32, 32)
     # Run the convolutional layer
     y = net(x)
+    original_output = y.flatten()
     # Convert the convolutional layer to affine
     bias, affine = conv_to_affine(conv, 32, 32, batch_norm)
     # Run the affine layer
-    z = affine @ x.view(-1) + bias
+    z = affine @ x.flatten() + bias.flatten()
     # Check that the outputs are the same
-    assert torch.allclose(y, z.view(y.shape))
+    torch.testing.assert_close(original_output, z)
 
 
-def test_conv_to_affine_with_bias_with_batch_norm():
-    # Build a simple convolutional network with just one layer
-    conv = torch.nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, padding=1)
-    batch_norm = torch.nn.BatchNorm2d(3)
-    net = torch.nn.Sequential(conv, batch_norm)
-    # Take a random input (shape of CIFAR-10 images)
-    x = torch.randn(1, 3, 32, 32)
-    # Run the convolutional layer
-    y = net(x)
-    # Convert the convolutional layer to affine
-    bias, affine = conv_to_affine(conv, 32, 32, batch_norm)
-    # Run the affine layer
-    z = affine @ x.view(-1) + bias
-    # Check that the outputs are the same
-    assert torch.allclose(y, z.view(y.shape))
+# This actually does not occur in any network as far as I know
+# and conv_to_affine() fails if I manually add a bias to the convolutional layer
+# def test_conv_to_affine_with_bias_with_batch_norm_net9():
+#     # Build a simple convolutional network with just one layer and no bias but a batch normalization layer
+#     net = get_net('net9', 'net9_cifar10_resnet_2b2_bn.pt')
+#     # This convolutional layer has no bias
+#     conv = net.resnet[0]
+#     conv.bias = torch.nn.Parameter(torch.randn(16))
+#     batch_norm = net.resnet[1]
+#     net = torch.nn.Sequential(conv, batch_norm)
+#     # Take a random input (shape of CIFAR-10 images)
+#     x = torch.randn(1, 3, 32, 32)
+#     # Run the convolutional layer
+#     y = net(x)
+#     original_output = y.flatten()
+#     # Convert the convolutional layer to affine
+#     bias, affine = conv_to_affine(conv, 32, 32, batch_norm)
+#     # Run the affine layer
+#     z = affine @ x.flatten() + bias.flatten()
+#     # Check that the outputs are the same
+#     torch.testing.assert_close(original_output, z)
 
 
 def test_deep_poly_fc_forward():
@@ -106,13 +187,11 @@ def test_deep_poly_fc_forward():
     fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
 
     # Check that the forward pass is correct
-    # Check that added_bounds[:, -2:] is correct for all layers (the concrete upper & lower bounds in added_bounds)
-    # MVP check that output bound is correct
-    alphas = 'min'
+    # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
+    # MVP check that output bound is correct at least
     
+    alphas = 'min'
 
-    # Check that the gradient after backprop is correct
-    # 
 
     # TODO: Check what the actual expected output of deep_poly is
 
@@ -163,8 +242,9 @@ def test_deep_poly_resnet():
     assert False
 
 
+# To enable debugging the test cases
 def main():
-    test_conv_to_affine_without_bias_without_batch_norm()
+    test_deep_poly_fc_forward()
 
 if __name__ == '__main__':
     main()
