@@ -176,8 +176,7 @@ def test_conv_to_affine_without_bias_with_batch_norm_net9():
 #     torch.testing.assert_close(original_output, z)
 
 
-# Try the forward pass for different input region sizes
-def test_deep_poly_fc_forward_with_min_initialization():
+def test_deep_poly_fc_forward_with_min_initialization_crossing():
     # Build a simple fully connected network that we can test by hand
     fc_net = FullyConnected(2, [2, 1], act='relu')
     # Set the weights and biases
@@ -188,7 +187,7 @@ def test_deep_poly_fc_forward_with_min_initialization():
     fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
     # Needed for deep_poly implementation
     layer = fc_net.layers
-    # Input "image" (remember that this is after normalization, so we should have mean 0 and std 1)
+    # Input "image"
     x = torch.tensor([0., 1.])
     # Input region
     epsilon = 1.
@@ -214,7 +213,7 @@ def test_deep_poly_fc_forward_with_min_initialization():
     assert torch.allclose(out_alpha.get(1), correct_alphas)
     
 
-def test_deep_poly_fc_forward_with_fixed_alphas():
+def test_deep_poly_fc_forward_with_fixed_alphas_crossing():
     # Build a simple fully connected network that we can test by hand
     fc_net = FullyConnected(2, [2, 1], act='relu')
     # Set the weights and biases
@@ -225,7 +224,7 @@ def test_deep_poly_fc_forward_with_fixed_alphas():
     fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
     # Needed for deep_poly implementation
     layer = fc_net.layers
-    # Input "image" (remember that this is after normalization, so we should have mean 0 and std 1)
+    # Input "image"
     x = torch.tensor([0., 1.])
     # Input region
     epsilon = 1.
@@ -249,7 +248,7 @@ def test_deep_poly_fc_forward_with_fixed_alphas():
 
 
 
-def test_deep_poly_fc_backward_gradient():
+def test_deep_poly_fc_backward_gradient_crossing():
     # Build a simple fully connected network that we can test by hand
     fc_net = FullyConnected(2, [2, 1], act='relu')
     # Set the weights and biases
@@ -260,7 +259,7 @@ def test_deep_poly_fc_backward_gradient():
     fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
     # Needed for deep_poly implementation
     layer = fc_net.layers
-    # Input "image" (remember that this is after normalization, so we should have mean 0 and std 1)
+    # Input "image"
     x = torch.tensor([0., 1.])
     # Input region
     epsilon = 1.
@@ -280,15 +279,150 @@ def test_deep_poly_fc_backward_gradient():
     correct_grads = torch.tensor([0., 1.])
     assert torch.allclose(alphas.get(1).grad, correct_grads)
 
-   
+
+def test_deep_poly_fc_forward_with_min_initialization_not_crossing_positive():
+    # Build a simple fully connected network that we can test by hand
+    fc_net = FullyConnected(2, [2, 1], act='relu')
+    # Set the weights and biases
+    fc_net.layers[0].weight = torch.nn.Parameter(torch.tensor([[1., 1.], [1., -1.]]))
+    fc_net.layers[0].bias = torch.nn.Parameter(torch.tensor([0., 0.]))
+    # Layer 1 is ReLU, so we don't need to set weights and biases
+    fc_net.layers[2].weight = torch.nn.Parameter(torch.tensor([[1., -1.]]))
+    fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
+    # Needed for deep_poly implementation
+    layer = fc_net.layers
+    # Input "image" for which we have no ReLU crossing
+    x = torch.tensor([2., 3.])
+    # Input region
+    epsilon = 1.
+    lb = x - epsilon
+    ub = x + epsilon
+    # We initialize the alphas for the ReLU layers
+    alphas = 'min'
+
+    # Check that the forward pass is correct
+    # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
+    # MVP check that output bound is correct at least
+    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub)
+    # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
+    correct_bounds_per_layer = [(torch.tensor([3., -3.]), torch.tensor([7., 1.])), (torch.tensor([3., 0.]), torch.tensor([7., 1.])), (torch.tensor([2.]), torch.tensor([6.5]))]
+    # Check that the concrete bounds are correct for all layers
+    for bounds, correct_bounds in zip(added_bounds, correct_bounds_per_layer):
+        bounds = bounds[-2:]
+        lb, ub, correct_lb, correct_ub = bounds[0], bounds[1], correct_bounds[0], correct_bounds[1]
+        assert torch.allclose(lb, correct_lb)
+        assert torch.allclose(ub, correct_ub)
+    # Check that the initialized alphas are correct as well
+    # Currently, alpha values get initialized even when the ReLU is not crossed, with the typical rule
+    correct_alphas = torch.tensor([1., 0.])
+    assert torch.allclose(out_alpha.get(1), correct_alphas)
 
 
+def test_deep_poly_fc_backward_gradient_not_crossing_positive():
+    # Build a simple fully connected network that we can test by hand
+    fc_net = FullyConnected(2, [2, 1], act='relu')
+    # Set the weights and biases
+    fc_net.layers[0].weight = torch.nn.Parameter(torch.tensor([[1., 1.], [1., -1.]]))
+    fc_net.layers[0].bias = torch.nn.Parameter(torch.tensor([0., 0.]))
+    # Layer 1 is ReLU, so we don't need to set weights and biases
+    fc_net.layers[2].weight = torch.nn.Parameter(torch.tensor([[1., -1.]]))
+    fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
+    # Needed for deep_poly implementation
+    layer = fc_net.layers
+    # Input "image"
+    x = torch.tensor([2., 3.])
+    # Input region
+    epsilon = 1.
+    lb = x - epsilon
+    ub = x + epsilon
+    # We initialize the alphas for the ReLU layers
+    alphas = 'min'
+
+    # Check that the forward pass is correct
+    # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
+    # MVP check that output bound is correct at least
+    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub)
+    
+    # Calculate the gradients of the upper bound w.r.t. the alphas
+    output_ub.backward()
+    # Check that the gradients are correct (should be -(x1 - x2) for alpha2 and 0 for alpha1, since it doesn't impact the output)
+    correct_grads = torch.tensor([0., 1.])
+    assert torch.allclose(out_alpha.get(1).grad, correct_grads)
+
+
+def test_deep_poly_fc_forward_with_min_initialization_not_crossing_negative():
+    # Build a simple fully connected network that we can test by hand
+    fc_net = FullyConnected(2, [2, 1], act='relu')
+    # Set the weights and biases
+    fc_net.layers[0].weight = torch.nn.Parameter(torch.tensor([[1., 1.], [1., -1.]]))
+    fc_net.layers[0].bias = torch.nn.Parameter(torch.tensor([0., 0.]))
+    # Layer 1 is ReLU, so we don't need to set weights and biases
+    fc_net.layers[2].weight = torch.nn.Parameter(torch.tensor([[1., -1.]]))
+    fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
+    # Needed for deep_poly implementation
+    layer = fc_net.layers
+    # Input "image" for which we have no ReLU crossing
+    x = torch.tensor([-2., 3.])
+    # Input region
+    epsilon = 1.
+    lb = x - epsilon
+    ub = x + epsilon
+    # We initialize the alphas for the ReLU layers
+    alphas = 'min'
+
+    # Check that the forward pass is correct
+    # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
+    # MVP check that output bound is correct at least
+    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub)
+    # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
+    correct_bounds_per_layer = [(torch.tensor([-1., -7.]), torch.tensor([3., -3.])), (torch.tensor([-1., 0.]), torch.tensor([3., 0.])), (torch.tensor([-1.5]), torch.tensor([2.5]))]
+    # Check that the concrete bounds are correct for all layers
+    for bounds, correct_bounds in zip(added_bounds, correct_bounds_per_layer):
+        bounds = bounds[-2:]
+        lb, ub, correct_lb, correct_ub = bounds[0], bounds[1], correct_bounds[0], correct_bounds[1]
+        assert torch.allclose(lb, correct_lb)
+        assert torch.allclose(ub, correct_ub)
+    # Check that the initialized alphas are correct as well
+    # Currently, alpha values get initialized even when the ReLU is not crossed, with the typical rule
+    correct_alphas = torch.tensor([1., 0.])
+    assert torch.allclose(out_alpha.get(1), correct_alphas)
+
+
+def test_deep_poly_fc_backward_gradient_not_crossing_negative():
+    # Build a simple fully connected network that we can test by hand
+    fc_net = FullyConnected(2, [2, 1], act='relu')
+    # Set the weights and biases
+    fc_net.layers[0].weight = torch.nn.Parameter(torch.tensor([[1., 1.], [1., -1.]]))
+    fc_net.layers[0].bias = torch.nn.Parameter(torch.tensor([0., 0.]))
+    # Layer 1 is ReLU, so we don't need to set weights and biases
+    fc_net.layers[2].weight = torch.nn.Parameter(torch.tensor([[1., -1.]]))
+    fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
+    # Needed for deep_poly implementation
+    layer = fc_net.layers
+    # Input "image"
+    x = torch.tensor([-2., 3.])
+    # Input region
+    epsilon = 1.
+    lb = x - epsilon
+    ub = x + epsilon
+    # We initialize the alphas for the ReLU layers
+    alphas = 'min'
+
+    # Check that the forward pass is correct
+    # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
+    # MVP check that output bound is correct at least
+    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub)
+    
+    # Calculate the gradients of the upper bound w.r.t. the alphas
+    output_ub.backward()
+    # Check that the gradients are correct (should be zero for both)
+    correct_grads = torch.tensor([0., 0.])
+    assert torch.allclose(out_alpha.get(1).grad, correct_grads)
 
 
 def test_deep_poly_conv_without_batch_norm():
     # For now, use stride 1, since there may be some issues with stride > 1 and the current implementation
     # Include a single conv layer, out_channel = 1, kernel_size = 2, stride = 1, padding = 1
-    # TODO: Sanity check that this is actually a valid network with the given parameters
     # After that a fc layer to 2 neurons, a relu layer and a single output layer
     # Padding is by default 0
     conv_net = Conv(input_size=2, input_channels=1, conv_layers=[(1, 2, 1, 1)], fc_layers=[2, 1], n_class=10)
@@ -311,7 +445,7 @@ def test_deep_poly_resnet():
 
 # To enable debugging the test cases
 def main():
-    test_deep_poly_fc_backward_gradient()
+    test_deep_poly_fc_backward_gradient_not_crossing_positive()
 
 if __name__ == '__main__':
     main()
