@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from verifier import conv_to_affine, get_net
+from verifier import conv_to_affine, get_net, deep_poly
 from networks import Conv as ConvNet
 from dummy_networks import FullyConnected, Conv, UnnormalizedResnet
 
@@ -176,24 +176,44 @@ def test_conv_to_affine_without_bias_with_batch_norm_net9():
 #     torch.testing.assert_close(original_output, z)
 
 
-def test_deep_poly_fc_forward():
+# Try the forward pass for different input region sizes
+def test_deep_poly_fc_forward_with_min_initialization():
     # Build a simple fully connected network that we can test by hand
     fc_net = FullyConnected(2, [2, 1], act='relu')
     # Set the weights and biases
     fc_net.layers[0].weight = torch.nn.Parameter(torch.tensor([[1., 1.], [1., -1.]]))
     fc_net.layers[0].bias = torch.nn.Parameter(torch.tensor([0., 0.]))
     # Layer 1 is ReLU, so we don't need to set weights and biases
-    fc_net.layers[2].weight = torch.nn.Parameter(torch.tensor([[1., 1.]]))
+    fc_net.layers[2].weight = torch.nn.Parameter(torch.tensor([[1., -1.]]))
     fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
+    # Needed for deep_poly implementation
+    layer = fc_net.layers
+    # Input "image" (remember that this is after normalization, so we should have mean 0 and std 1)
+    x = torch.tensor([0., 1.])
+    # Input region
+    epsilon = 1.
+    lb = x - epsilon
+    ub = x + epsilon
+    # We initialize the alphas for the ReLU layers
+    alphas = 'min'
 
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
+    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub)
+    # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
+    correct_bounds_per_layer = [(torch.tensor([-1., -3.]), torch.tensor([3., 1.])), (torch.tensor([-1., 0.]), torch.tensor([3., 1.])), (torch.tensor([-2.]), torch.tensor([2.5]))]
+    # Check that the concrete bounds are correct for all layers
+    for bounds, correct_bounds in zip(added_bounds, correct_bounds_per_layer):
+        bounds = bounds[-2:]
+        lb, ub, correct_lb, correct_ub = bounds[0], bounds[1], correct_bounds[0], correct_bounds[1]
+        assert torch.allclose(lb, correct_lb)
+        assert torch.allclose(ub, correct_ub)
+    # Check that the initialized alphas are correct as well
+    correct_alphas = torch.tensor([1., 0.])
+    assert torch.allclose(out_alpha.get(1), correct_alphas)
     
-    alphas = 'min'
 
-
-    # TODO: Check what the actual expected output of deep_poly is
 
 # Check that backprop behaves how we expected it to behave
 def test_deep_poly_fc_backward_gradient():
@@ -244,7 +264,7 @@ def test_deep_poly_resnet():
 
 # To enable debugging the test cases
 def main():
-    test_deep_poly_fc_forward()
+    test_deep_poly_fc_forward_with_min_initialization()
 
 if __name__ == '__main__':
     main()
