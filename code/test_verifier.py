@@ -248,7 +248,7 @@ def test_deep_poly_fc_forward_with_fixed_alphas():
         assert torch.allclose(ub, correct_ub)
 
 
-# Check that backprop behaves how we expected it to behave
+
 def test_deep_poly_fc_backward_gradient():
     # Build a simple fully connected network that we can test by hand
     fc_net = FullyConnected(2, [2, 1], act='relu')
@@ -256,18 +256,31 @@ def test_deep_poly_fc_backward_gradient():
     fc_net.layers[0].weight = torch.nn.Parameter(torch.tensor([[1., 1.], [1., -1.]]))
     fc_net.layers[0].bias = torch.nn.Parameter(torch.tensor([0., 0.]))
     # Layer 1 is ReLU, so we don't need to set weights and biases
-    fc_net.layers[2].weight = torch.nn.Parameter(torch.tensor([[1., 1.]]))
+    fc_net.layers[2].weight = torch.nn.Parameter(torch.tensor([[1., -1.]]))
     fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
+    # Needed for deep_poly implementation
+    layer = fc_net.layers
+    # Input "image" (remember that this is after normalization, so we should have mean 0 and std 1)
+    x = torch.tensor([0., 1.])
+    # Input region
+    epsilon = 1.
+    lb = x - epsilon
+    ub = x + epsilon
+    # We initialize the alphas for the ReLU layers
+    alphas = {1: torch.tensor([0.2, 0.7]).requires_grad_()}
 
     # Check that the forward pass is correct
-    # Check that added_bounds[:, -2:] is correct for all layers (the concrete upper & lower bounds in added_bounds)
-    # MVP check that output bound is correct
-    alphas = 'min'
+    # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
+    # MVP check that output bound is correct at least
+    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub)
     
-    # Check that the gradient after backprop is correct
-    # alphas.backward()
-    # compare to calculation by hand
-    assert False
+    # Calculate the gradients of the upper bound w.r.t. the alphas
+    output_ub.backward()
+    # Check that the gradients are correct (should be -(x1 - x2) for alpha2 and 0 for alpha1)
+    correct_grads = torch.tensor([0., 1.])
+    assert torch.allclose(alphas.get(1).grad, correct_grads)
+
+   
 
 
 
@@ -298,7 +311,7 @@ def test_deep_poly_resnet():
 
 # To enable debugging the test cases
 def main():
-    test_deep_poly_fc_forward_with_fixed_alphas()
+    test_deep_poly_fc_backward_gradient()
 
 if __name__ == '__main__':
     main()
