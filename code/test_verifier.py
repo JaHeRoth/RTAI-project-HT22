@@ -214,6 +214,39 @@ def test_deep_poly_fc_forward_with_min_initialization():
     assert torch.allclose(out_alpha.get(1), correct_alphas)
     
 
+def test_deep_poly_fc_forward_with_fixed_alphas():
+    # Build a simple fully connected network that we can test by hand
+    fc_net = FullyConnected(2, [2, 1], act='relu')
+    # Set the weights and biases
+    fc_net.layers[0].weight = torch.nn.Parameter(torch.tensor([[1., 1.], [1., -1.]]))
+    fc_net.layers[0].bias = torch.nn.Parameter(torch.tensor([0., 0.]))
+    # Layer 1 is ReLU, so we don't need to set weights and biases
+    fc_net.layers[2].weight = torch.nn.Parameter(torch.tensor([[1., -1.]]))
+    fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([-0.5]))
+    # Needed for deep_poly implementation
+    layer = fc_net.layers
+    # Input "image" (remember that this is after normalization, so we should have mean 0 and std 1)
+    x = torch.tensor([0., 1.])
+    # Input region
+    epsilon = 1.
+    lb = x - epsilon
+    ub = x + epsilon
+    # We initialize the alphas for the ReLU layers
+    alphas = {1: torch.tensor([0.5, 0.5])}
+
+    # Check that the forward pass is correct
+    # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
+    # MVP check that output bound is correct at least
+    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub)
+    # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
+    correct_bounds_per_layer = [(torch.tensor([-1., -3.]), torch.tensor([3., 1.])), (torch.tensor([-0.5, -1.5]), torch.tensor([3., 1.])), (torch.tensor([-1.5]), torch.tensor([3.]))]
+    # Check that the concrete bounds are correct for all layers
+    for bounds, correct_bounds in zip(added_bounds, correct_bounds_per_layer):
+        bounds = bounds[-2:]
+        lb, ub, correct_lb, correct_ub = bounds[0], bounds[1], correct_bounds[0], correct_bounds[1]
+        assert torch.allclose(lb, correct_lb)
+        assert torch.allclose(ub, correct_ub)
+
 
 # Check that backprop behaves how we expected it to behave
 def test_deep_poly_fc_backward_gradient():
@@ -234,6 +267,7 @@ def test_deep_poly_fc_backward_gradient():
     # Check that the gradient after backprop is correct
     # alphas.backward()
     # compare to calculation by hand
+    assert False
 
 
 
@@ -264,7 +298,7 @@ def test_deep_poly_resnet():
 
 # To enable debugging the test cases
 def main():
-    test_deep_poly_fc_forward_with_min_initialization()
+    test_deep_poly_fc_forward_with_fixed_alphas()
 
 if __name__ == '__main__':
     main()
