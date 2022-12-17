@@ -462,6 +462,14 @@ def test_deep_poly_conv_without_batch_norm():
         assert torch.allclose(lb, correct_lb)
         assert torch.allclose(ub, correct_ub)
     
+    # Calculate the gradients of the upper bound w.r.t. the alphas
+    output_ub.backward()
+    # Check that the gradients are correct
+    correct_grads_1 = torch.tensor([0., 0., -2., 0.])
+    correct_grads_4 = torch.tensor([2.5, 0.])
+    assert torch.allclose(out_alpha.get(1).grad, correct_grads_1)
+    assert torch.allclose(out_alpha.get(4).grad, correct_grads_4)
+    
 
 
 def test_deep_poly_resnet():
