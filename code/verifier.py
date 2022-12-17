@@ -64,7 +64,7 @@ def set_seed(seed: int):
 
 def analyze(net, inputs, eps, true_label):
     set_seed(0)
-    certify(net, inputs, eps, true_label)
+    return certify(net, inputs, eps, true_label)
 
 
 def main():
