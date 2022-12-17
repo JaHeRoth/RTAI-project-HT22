@@ -62,6 +62,6 @@ def concretize_bounds(abstract_lb: Tensor, abstract_ub: Tensor, past_bounds: Bou
     # input_lb & input_ub are still src_lb & src_ub, so the original input region
     direct_lb, direct_ub = backtrack(abstract_lb, abstract_ub, past_bounds)
     input_lb, input_ub = input_lb.reshape(-1, 1), input_ub.reshape(-1, 1)
-    concrete_lb = cased_mul_w_bias(direct_lb, input_lb, input_ub).flatten()
-    concrete_ub = cased_mul_w_bias(direct_ub, input_ub, input_lb).flatten()
+    concrete_lb: Tensor = cased_mul_w_bias(direct_lb, input_lb, input_ub).flatten()
+    concrete_ub: Tensor = cased_mul_w_bias(direct_ub, input_ub, input_lb).flatten()
     return concrete_lb, concrete_ub
