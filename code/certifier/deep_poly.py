@@ -87,7 +87,7 @@ def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: 
     rewriting (and thus treating) both of these as a single fully connected layer."""
     st = datetime.now()
     intercept, coefficients = caching_conv_to_affine(layer, in_height, in_width, bn_layer, c2a_cache)
-    dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds on conv_to_affine.")
+    dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds on caching_conv_to_affine.")
     return affine_bounds(intercept, coefficients, past_bounds, input_lb, input_ub, should_concretize)
 
 
