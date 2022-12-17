@@ -1,5 +1,7 @@
 import pytest
 import torch
+import itertools
+from torch.nn import Sequential
 
 from verifier import conv_to_affine, get_net, deep_poly
 from networks import Conv as ConvNet
@@ -24,8 +26,6 @@ Test suite:
 
 """
 
-
-# TODO?: Include different strides in the tests -> Should be accomplished by using all the different networks
 def test_conv_to_affine_without_bias_without_batch_norm_net4():
     # Extract the layer from one of the official networks
     net = get_net('net4', 'net4_mnist_conv1.pt')
@@ -151,29 +151,6 @@ def test_conv_to_affine_without_bias_with_batch_norm_net9():
     z = affine @ x.flatten() + bias.flatten()
     # Check that the outputs are the same
     torch.testing.assert_close(original_output, z)
-
-
-# This actually does not occur in any network as far as I know
-# and conv_to_affine() fails if I manually add a bias to the convolutional layer
-# def test_conv_to_affine_with_bias_with_batch_norm_net9():
-#     # Build a simple convolutional network with just one layer and no bias but a batch normalization layer
-#     net = get_net('net9', 'net9_cifar10_resnet_2b2_bn.pt')
-#     # This convolutional layer has no bias
-#     conv = net.resnet[0]
-#     conv.bias = torch.nn.Parameter(torch.randn(16))
-#     batch_norm = net.resnet[1]
-#     net = torch.nn.Sequential(conv, batch_norm)
-#     # Take a random input (shape of CIFAR-10 images)
-#     x = torch.randn(1, 3, 32, 32)
-#     # Run the convolutional layer
-#     y = net(x)
-#     original_output = y.flatten()
-#     # Convert the convolutional layer to affine
-#     bias, affine = conv_to_affine(conv, 32, 32, batch_norm)
-#     # Run the affine layer
-#     z = affine @ x.flatten() + bias.flatten()
-#     # Check that the outputs are the same
-#     torch.testing.assert_close(original_output, z)
 
 
 def test_deep_poly_fc_forward_with_min_initialization_crossing():
@@ -428,7 +405,6 @@ def test_deep_poly_conv_without_batch_norm():
     # Set the weights and biases
     conv_net.layers[0].weight = torch.nn.Parameter(torch.tensor([[[[0., 1., 0.], [1., 1., 1.], [0., 1., 0.]]]]))
     conv_net.layers[0].bias = torch.nn.Parameter(torch.tensor([0.]))
-    # TODO: Set fc weights and biases
     conv_net.layers[3].weight = torch.nn.Parameter(torch.tensor([[1., -1., 0., 0.], [0., 0., -1., 1.]]))
     conv_net.layers[3].bias = torch.nn.Parameter(torch.tensor([-0.5, 0.]))
     conv_net.layers[5].weight = torch.nn.Parameter(torch.tensor([[-1., 1.]]))
@@ -449,7 +425,6 @@ def test_deep_poly_conv_without_batch_norm():
     # MVP check that output bound is correct at least
     output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub)
     # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
-    # TODO: Calculate by hand
     correct_bounds_per_layer = [(torch.tensor([-6., -3., -2., 2.]), torch.tensor([0., 3., 4., 8.])), 
                                 (torch.tensor([0., -1.5, -1., 2.]), torch.tensor([0., 3., 4., 8.])), 
                                 (torch.tensor([-7/2, 2/3]), torch.tensor([1., 7.])),
@@ -483,14 +458,23 @@ def test_deep_poly_resnet():
 
 
 def test_resnet_flattening():
-    # Check that the flattening done in our code does not change the output 
-    # of the ResNet network
+    # Load one of the resnets
+    networks = ['net8', 'net9', 'net10']
+    network_names = ['net8_cifar10_resnet_2b.pt', 'net9_cifar10_resnet_2b2_bn.pt', 'net10_cifar10_resnet_4b.pt']
 
-    assert False
+    # Pick a random input image (CIFAR10)
+    x = torch.rand(1, 3, 32, 32)
+
+    for network, network_name in zip(networks, network_names):
+        net = get_net(network, network_name)
+        flat_net = Sequential(*itertools.chain.from_iterable([(layer if type(layer) is Sequential else [layer]) for layer in net.resnet]))
+        assert torch.allclose(net.resnet(x), flat_net(x))
+        
+
 
 # To enable debugging the test cases
 def main():
-    test_deep_poly_conv_without_batch_norm()
+    test_resnet_flattening()
 
 if __name__ == '__main__':
     main()
