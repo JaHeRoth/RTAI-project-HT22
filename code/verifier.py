@@ -124,6 +124,7 @@ def concretize_bounds(abstract_lb: Tensor, abstract_ub: Tensor, past_bounds: Bou
     and upper (`abstract_ub`) on the layer directly before it, the abstract and concrete upper and
     lower bounds of all layers before it and the concrete bounds of the network's input region we
     seek to verify."""
+    # input_lb & input_ub are still src_lb & src_ub, so the original input region
     direct_lb, direct_ub = backtrack(abstract_lb, abstract_ub, past_bounds)
     input_lb, input_ub = input_lb.reshape(-1, 1), input_ub.reshape(-1, 1)
     concrete_lb = cased_mul_w_bias(direct_lb, input_lb, input_ub).flatten()
@@ -171,6 +172,8 @@ def affine_bounds(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input
     before it, the abstract and concrete lower and upper bounds of all layers before it
     and the concrete upper and lower bounds of the region of input data that should be
     verified for this network."""
+    # input_lb & input_ub are just the src_lb & src_ub of the first layer in the network
+    # Concatinates the bias of a node with the weights of the edges coming into it
     abstract_lower = abstract_upper = torch.hstack([bias.reshape(-1, 1), coefficients])
     concrete_lower, concrete_upper = concretize_bounds(abstract_lower, abstract_upper, past_bounds, input_lb, input_ub)
     return abstract_lower, abstract_upper, concrete_lower, concrete_upper
@@ -178,13 +181,16 @@ def affine_bounds(bias: Tensor, coefficients: Tensor, past_bounds: Bounds, input
 
 def fc_bounds(layer: Linear, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor):
     """:return: Abstract and concrete upper and lower bounds of the fully connected `layer`."""
+    # input_lb & input_ub are just the src_lb & src_ub of the first layer in the network
+    # Extract the bias and weights of the layer and hand them off to affine_bounds
     bias = layer.bias.detach() if layer.bias is not None else torch.zeros(layer.out_features)
-    return affine_bounds(bias, layer.weight.detach(), past_bounds, input_lb, input_ub)
+    weights = layer.weight.detach()
+    return affine_bounds(bias, weights, past_bounds, input_lb, input_ub)
 
 
 def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor, in_height: int, in_width: int, bn_layer: Optional[BatchNorm2d]):
     """:return: Abstract and concrete upper and lower bounds of the convolutional layer `layer`
-    and if applicable the batch normalization layer `bn_layer` directly following it, uppon
+    and if applicable the batch normalization layer `bn_layer` directly following it, upon
     rewriting (and thus treating) both of these as a single fully connected layer."""
     st = datetime.now()
     intercept, coefficients = conv_to_affine(layer, in_height, in_width, bn_layer)
@@ -204,6 +210,8 @@ def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
     elif strategy == "noisymin":
         min_scale = 0.75
         random_scales = min_scale + torch.rand(in_lb.shape) * (1 - min_scale)
+        # TODO: Does this really introduce symmetric noise?
+        # I think it works if the comparison is true, but not if it's false. Then we always get 0, no noise
         return (in_ub > -in_lb) * random_scales
     raise ValueError(f"{strategy} is an invalid alpha-generating strategy.")
 
@@ -219,13 +227,38 @@ def relu_bounds(past_bounds: Bounds, alpha: Union[Tensor, str]):
     if type(alpha) == str:
         alpha = generate_alpha(prev_lb, prev_ub, strategy=alpha).requires_grad_()
     in_len = len(prev_lb)
-    upper_slope = prev_ub / (prev_ub - prev_lb)
     lb_bias, ub_bias, lb_scaling, ub_scaling = [torch.zeros(in_len) for _ in range(4)]
     lb_scaling[prev_lb >= 0], ub_scaling[prev_lb >= 0] = 1, 1
+
+    # Upper and lower bounds of crossing ReLUs, secured against numeric
+    # underflow in the alpha gradients through strategic detaching
     crossing_mask = (prev_lb < 0) & (prev_ub > 0)
     lb_scaling[crossing_mask] = alpha[crossing_mask]
-    ub_scaling[crossing_mask] = upper_slope[crossing_mask]
-    ub_bias[crossing_mask] = (-upper_slope * prev_lb)[crossing_mask]
+    numerically_unstable = prev_lb.abs() < 10 ** -5
+    stable_crossing = crossing_mask & ~numerically_unstable
+    unstable_crossing = crossing_mask & numerically_unstable
+    # I'm unsure why, but calling detach_() after these lines on the unstable
+    # indices didn't hinder the backpropagation to use them for computing gradients
+    # of past alphas, thus didn't help avoid the nan alpha gradients.
+    # A possible explanation is that the computation graph creates shortcuts that bypass
+    # these nodes, as they aren't leaf nodes anyway, thus that when we detach them we're
+    # not actually cutting the connection between past alphas and ouptut caused by these
+    # computations: https://youtu.be/MswxJw-8PvE?t=224
+    if unstable_crossing.any():
+        dprint(f"Encountered {unstable_crossing.sum()} dangerously small term(s) "
+               f"(<e-5) in relu_bounds, thus detaching this/these to avoid under-/overflows.")
+    stable_lb = prev_lb[stable_crossing]
+    stable_ub = prev_ub[stable_crossing]
+    unstable_lb = prev_lb[unstable_crossing].detach()
+    unstable_ub = prev_ub[unstable_crossing].detach()
+    upper_slope = torch.zeros(prev_lb.shape)
+    upper_slope[stable_crossing] = (stable_ub / (stable_ub - stable_lb))
+    ub_scaling[stable_crossing] = upper_slope[stable_crossing]
+    ub_bias[stable_crossing] = (-upper_slope[stable_crossing] * stable_lb)
+    upper_slope[unstable_crossing] = (unstable_ub / (unstable_ub - unstable_lb))
+    ub_scaling[unstable_crossing] = upper_slope[unstable_crossing]
+    ub_bias[unstable_crossing] = (-upper_slope[unstable_crossing] * unstable_lb)
+
     abstract_lb = torch.hstack([lb_bias.reshape(-1, 1), lb_scaling.diag()])
     abstract_ub = torch.hstack([ub_bias.reshape(-1, 1), ub_scaling.diag()])
     concrete_lb = abstract_lb[:, 0] + abstract_lb[:, 1:] @ prev_lb
@@ -322,8 +355,10 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             bounds.append(fc_bounds(layer, bounds, src_lb, src_ub))
         elif type(layer) == Conv2d:
             in_height, in_width = in_shapes[k][-2:]
+            # We look at convolutions and batch_norms in one go, so we need to check if the next layer
             bn_layer = layers[k+1] if len(layers) > k + 1 and type(layers[k+1]) == BatchNorm2d else None
             bounds.append(conv_bounds(layer, bounds, src_lb, src_ub, in_height, in_width, bn_layer))
+            # We then skip the next layer since we do nothing for BatchNorm2d layers
         elif type(layer) == ReLU:
             bound, out_alpha[k] = relu_bounds(bounds, alpha[k] if type(alpha) == dict else alpha)
             bounds.append(bound)
@@ -334,6 +369,7 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
         dprint(f"Layer {k} of type {type(layer)} took {(datetime.now()-st).total_seconds()} seconds.")
     dprint(f"Spent {(datetime.now() - outer_st).total_seconds()} seconds passing through all layers.")
     output_ub = bounds[-1][3]
+    # Return all the newly added abstract and concrete bounds as well
     added_bounds = bounds if in_bounds is None else bounds[len(in_bounds):]
     return output_ub, out_alpha, added_bounds
 
@@ -364,12 +400,13 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     evolution_period = 5 if DEBUG else 10
     learning_rate = 10**0
     for epoch in range(max_iter):
+        # We iterate over our ensemble of 3 alpha strategies
         for i, (old_ub, alpha) in enumerate(zip(out_ubs, alphas)):
             # After the first epoch, we initialized the alphas for each strategy and do a Gradient Descent step
             if type(alpha) is not str:
                 # TODO?: According to documentation, gradients do get aggregated over time, do we need to null them here for each epoch? 
                 # Meaning alpha[k].grad.zero_() for k in alpha.keys()?
-                # Or is this solved by our design that we always detach the alphas and then build a new graph in the next forward pass? Would investigate.
+                # Or is this solved by our design that we always detach the alphas and then build a new graph in the next forward pass? Would investigate. -> Done
 
                 # We always optimize/differentiate w.r.t. the first unbeaten competitive class comparison
                 # The resulting gradient is stored in the alpha values, which are the leafes of the computational graph
@@ -395,16 +432,19 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 # We found an alpha that ruled out at least one category, so we update the comparison layer
                 dprint(f"{len(remaining_labels)} categories left to beat: {remaining_labels}.")
                 # TODO?: Dumb idea, but is there anything in the comp graph of layers that we lose when we do this override?
-                # Or is everything solved by the fact, that our next run of deep_poly will build a new comp graph?
+                # Or is everything solved by the fact, that our next run of deep_poly will build a new comp graph? -> yep
                 # TODO?: Also, maybe another stupid thought, but does this even help computation in any way? Since we'll optimize
                 # the alphas only regarding the first to-be-beaten category anyways, so the edges that fall away here don't contribute anyways?
-                # Of course it's very neat with the current implementation, but I don't know how big the overhead of rebuilding the network is.
+                # Of course it's very neat with the current implementation, but I don't know how big the overhead of rebuilding the network is. -> Overhead is negligible
                 layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
+            # Save the upper bound and the alpha values for the right strategy
             out_ubs[i], alphas[i] = out_ub, out_alpha
         dprint(f"out_ubs after epoch {epoch}: {[out_ub.detach().numpy() for out_ub in out_ubs]}")
         # Do a little bit of evolution, i.e. mutate the worst performing alpha after some epochs
         if epoch % evolution_period == 0 and epoch > 0:
+            # TODO?: Is this a typo or am I stupid, the extra brackets after ReLU()? -> Works
             total_losses = Tensor([ReLU()(out_ub).sum() for out_ub in out_ubs])
+            # Worst performing strategy will be reinitialized with a noisy min strategy
             alphas[torch.argmax(total_losses)] = "noisymin"
     dprint(f"Failed to verify after {(datetime.now()-start_time).total_seconds()} seconds and {max_iter} epochs.")
     return False
@@ -449,7 +489,7 @@ def analyze(net, inputs, eps, true_label):
     # TODO: Some networks also have a flattening layer which seems irrelevant for our purposes, could we extract that too? Possible performance gain?
     if type(net) == NormalizedResnet:
         normalizer = net.normalization
-        # Flatten the nested ResNet by unfolding Sequential layers
+        # Flatten the nested ResNet by unfolding Sequential layers (Keeps the BasicBlock layers intact)
         layers = Sequential(*itertools.chain.from_iterable([(layer if type(layer) is Sequential else [layer]) for layer in net.resnet]))
     else:
         normalizer = net.layers[0]
@@ -457,7 +497,9 @@ def analyze(net, inputs, eps, true_label):
     # We only have to account for valid input pixels, so we clamp back to [0, 1]
     input_lb, input_ub = (inputs - eps).clamp(0, 1), (inputs + eps).clamp(0, 1)
     normalized_lb, normalized_ub = normalizer(input_lb), normalizer(input_ub)
-    return ensemble_poly(layers, normalized_lb, normalized_ub, true_label)
+    # Ensure we crash (which counts as not verified) if gradients are nan or inf
+    with torch.autograd.set_detect_anomaly(True):
+        return ensemble_poly(layers, normalized_lb, normalized_ub, true_label)
 
 
 def main():
