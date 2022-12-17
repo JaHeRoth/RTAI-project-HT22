@@ -235,10 +235,9 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             bounds.append(fc_bounds(layer, bounds, src_lb, src_ub))
         elif type(layer) == Conv2d:
             in_height, in_width = in_shapes[k][-2:]
-            # We look at convolutions and batch_norms in one go, so we need to check if the next layer
+            # We look at convolutions and batch_norms in one go
             bn_layer = layers[k+1] if len(layers) > k + 1 and type(layers[k+1]) == BatchNorm2d else None
             bounds.append(conv_bounds(layer, bounds, src_lb, src_ub, in_height, in_width, bn_layer))
-            # We then skip the next layer since we do nothing for BatchNorm2d layers
         elif type(layer) == ReLU:
             bound, out_alpha[k] = relu_bounds(bounds, alpha[k] if type(alpha) == dict else alpha)
             bounds.append(bound)
