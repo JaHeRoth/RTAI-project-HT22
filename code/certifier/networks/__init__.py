@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from resnet import ResNet, BasicBlock
+from .resnet import ResNet, BasicBlock
+
 
 class Normalization(nn.Module):
 
@@ -77,7 +78,7 @@ class NormalizedResnet(nn.Module):
 
     def __init__(self, device, resnet):
         super(NormalizedResnet, self).__init__()
-        
+
         self.normalization = Normalization(device, 'cifar10')
         self.resnet = resnet
 
@@ -101,7 +102,8 @@ def get_net_name(net):
         'net10': 'net10_cifar10_resnet_4b.pt',
     }
     return net_names[net]
-    
+
+
 def get_network(device, net):
     if net == 'net1':
         return FullyConnected(device, 'mnist', 28, 1, [50, 10])

@@ -1,8 +1,9 @@
 import pytest
 import torch
 
-from verifier import conv_to_affine, get_net, deep_poly
-from networks import Conv as ConvNet
+from verifier import get_net
+from certifier.deep_poly import conv_to_affine, deep_poly
+from certifier.networks import Conv as ConvNet
 from dummy_networks import FullyConnected, Conv, UnnormalizedResnet
 
 """

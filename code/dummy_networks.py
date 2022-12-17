@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from resnet import ResNet, BasicBlock
+from certifier.networks.resnet import ResNet, BasicBlock
 
 
 class FullyConnected(nn.Module):
