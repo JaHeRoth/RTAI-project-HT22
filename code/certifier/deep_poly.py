@@ -1,4 +1,5 @@
 import re
+from contextlib import nullcontext
 from datetime import datetime
 from itertools import product
 from typing import Optional, Union, List, Dict
@@ -208,7 +209,8 @@ def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Te
     out_len = len(b_bounds[-1][0])
     identity = torch.hstack([torch.zeros(out_len, 1), torch.eye(out_len)])
     bounds_with_block = [*bounds, block_bounds]
-    concrete_lb, concrete_ub = concretize_bounds(identity, identity, bounds_with_block, input_lb, input_ub)
+    with torch.no_grad():
+        concrete_lb, concrete_ub = concretize_bounds(identity, identity, bounds_with_block, input_lb, input_ub)
     block_bounds["lb"], block_bounds["ub"] = concrete_lb, concrete_ub
     return block_bounds, block_alphas
 
@@ -248,7 +250,9 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             # Two last layers of our network are always linear, so concrete bounds of first of these aren't used
             # BasicBlocks have no Linear layers, so can assume is_nested=False
             should_concretize = k != len(layers) - 2
-            bounds.append(fc_bounds(layer, bounds, src_lb, src_ub, should_concretize))
+            needs_grad = k == len(layers) - 1
+            with torch.no_grad() if not needs_grad else nullcontext():
+                bounds.append(fc_bounds(layer, bounds, src_lb, src_ub, should_concretize))
         elif type(layer) == Conv2d:
             in_height, in_width = in_shapes[k][-2:]
             # Consecutive pair of Conv, BatchNorm layers is treated as a single affine layer
@@ -257,8 +261,9 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             # thus its concrete bounds aren't used, thus shouldn't be computed (to save time)
             should_concretize = not (is_nested and (
                     (bn_layer is None and k == len(layers) - 1) or (bn_layer is not None and k == len(layers) - 2)))
-            bounds.append(conv_bounds(
-                layer, bounds, src_lb, src_ub, in_height, in_width, bn_layer, c2a_cache, should_concretize))
+            with torch.no_grad():
+                bounds.append(conv_bounds(
+                    layer, bounds, src_lb, src_ub, in_height, in_width, bn_layer, c2a_cache, should_concretize))
         elif type(layer) == ReLU:
             bound, out_alpha[k] = relu_bounds(bounds, alpha[k] if type(alpha) == dict else alpha)
             bounds.append(bound)
