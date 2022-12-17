@@ -44,7 +44,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     # This can then be used to optimize the alphas for all remaining labels at once
     layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
     # The strategy with which we initialize the ensemble of our alphas
-    alphas = ["min", "noisymin", "noisymin"]
+    alphas = ["min", "smoothmin", "noisymin"]
     # The upper bounds we achieve with the three different strategies
     out_ubs: List[Optional[Tensor]] = [None for _ in alphas]
     c2a_cache = ConvToAffineCache()

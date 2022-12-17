@@ -108,7 +108,8 @@ def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
     elif strategy == "smoothmin":
         # Like min, but with a smooth transition between 0 and 1, to reflect difference in area
         # being small when in_ub and -in_lb are almost the same
-        return 1/2 + torch.atan(in_ub + in_lb) / torch.pi
+        scaling_factor = 2
+        return 1/2 + torch.atan(scaling_factor * (in_ub + in_lb)) / torch.pi
     raise ValueError(f"{strategy} is an invalid alpha-generating strategy.")
 
 
