@@ -208,11 +208,10 @@ def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
     elif strategy == "min":
         return (in_ub > -in_lb).float()
     elif strategy == "noisymin":
-        min_scale = 0.75
+        # Like min strategy, but deviations from alpha=0.5 scaled by uniformly random numbers
+        min_scale = 0.5
         random_scales = min_scale + torch.rand(in_lb.shape) * (1 - min_scale)
-        # TODO: Does this really introduce symmetric noise?
-        # I think it works if the comparison is true, but not if it's false. Then we always get 0, no noise
-        return (in_ub > -in_lb) * random_scales
+        return 1 / 2 + ((in_ub > -in_lb).float() - 1 / 2) * random_scales
     raise ValueError(f"{strategy} is an invalid alpha-generating strategy.")
 
 
