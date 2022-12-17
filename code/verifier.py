@@ -16,7 +16,7 @@ from resnet import BasicBlock
 
 DEVICE = 'cpu'
 DTYPE = torch.float32
-DEBUG = False
+DEBUG = True
 
 
 def transform_image(pixel_values, input_dim):
@@ -192,9 +192,10 @@ def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: 
     """:return: Abstract and concrete upper and lower bounds of the convolutional layer `layer`
     and if applicable the batch normalization layer `bn_layer` directly following it, upon
     rewriting (and thus treating) both of these as a single fully connected layer."""
-    # Transform the conv (and batch) layer to a fc layer, calculate its bias and weights
-    bias, weights = conv_to_affine(layer, in_height, in_width, bn_layer)
-    return affine_bounds(bias, weights, past_bounds, input_lb, input_ub)
+    st = datetime.now()
+    intercept, coefficients = conv_to_affine(layer, in_height, in_width, bn_layer)
+    dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds on conv_to_affine.")
+    return affine_bounds(intercept, coefficients, past_bounds, input_lb, input_ub)
 
 
 def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
@@ -339,15 +340,17 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
     in this run (equals `alpha` if that already contained the numerical values, rather than just a
     strategy string); the abstract and concrete bounds of all layers in `layers`.
     """
-    # in_shapes is a list of shapes for each layer in the network
-    # if in_shape is set, we are in a ResNet and only look at the input shape of the first layer
+    st = datetime.now()
     in_shapes = infer_layer_input_shapes(layers, src_lb if in_shape is None else torch.zeros(in_shape))
+    dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds on infer_layer_input_shapes.")
+    st = datetime.now()
     src_lb, src_ub = src_lb.flatten(), src_ub.flatten()
-    # We start with empty bounds for the network, unless we are 
-    # in a ResNet, in which case we need to pass in the bounds because it doesn't see the previous layers
+    dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds flattening concrete input bounds.")
     bounds: Bounds = in_bounds.copy() if in_bounds is not None else []
     out_alpha: Dict[Union[str, int], Tensor] = {}
+    outer_st = datetime.now()
     for k, layer in enumerate(layers):
+        st = datetime.now()
         if type(layer) == Linear:
             bounds.append(fc_bounds(layer, bounds, src_lb, src_ub))
         elif type(layer) == Conv2d:
@@ -363,10 +366,8 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             block_bounds, block_alphas = res_bounds(layer, bounds, src_lb, src_ub, k, alpha, in_shapes[k])
             out_alpha.update(block_alphas)
             bounds.append(block_bounds)
-    # TODO: What are the first two elements of bounds?
-    # [0] abstract lower bound, [1] abstract upper bound, 
-    # [2] concrete lower bound, [3] concrete upper bound?
-    # Extract the concrete upper bounds of the last layer to return
+        dprint(f"Layer {k} of type {type(layer)} took {(datetime.now()-st).total_seconds()} seconds.")
+    dprint(f"Spent {(datetime.now() - outer_st).total_seconds()} seconds passing through all layers.")
     output_ub = bounds[-1][3]
     # Return all the newly added abstract and concrete bounds as well
     added_bounds = bounds if in_bounds is None else bounds[len(in_bounds):]
@@ -410,11 +411,15 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 # We always optimize/differentiate w.r.t. the first unbeaten competitive class comparison
                 # The resulting gradient is stored in the alpha values, which are the leafes of the computational graph
                 # TODO?: Just for myself, check that the index here does not need to be updated, i.e. that the first unbeaten class is always at index 0 because
-                # we always remove the beaten classes. Should happen through changing the comparison layer and the execution of deep_poly, but just to be sure. -> Done
+                # we always remove the beaten classes. Should happen through changing the comparison layer and the execution of deep_poly, but just to be sure.
+                st = datetime.now()
                 old_ub[0].backward()
-                # TODO: Use an optimizer instead of manually updating the alphas?
-                alpha = {k: (ten - learning_rate * ten.grad).clamp(0, 1).detach().requires_grad_() for k, ten in alpha.items()}
+                # Gradient descent step
+                alpha = {k: (alpha[k] - learning_rate * alpha[k].grad).clamp(0, 1).detach().requires_grad_() for k in alpha.keys()}
+                dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds on backprop and updating.")
+            st = datetime.now()
             out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub)
+            dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds running DeepPoly (one forward pass).")
             # TODO: Are we satisfied with a tie? Or do we need to be strictly better? Could be an (unlikely) error source
             remaining_labels = remaining_labels[out_ub > 0]
             if len(remaining_labels) == 0:
