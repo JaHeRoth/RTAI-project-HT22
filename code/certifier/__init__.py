@@ -6,6 +6,7 @@ import torch
 from torch import Tensor
 from torch.nn import Sequential, ReLU, Linear
 
+from .cache import ConvToAffineCache
 from .networks import NormalizedResnet
 from .constants import DEBUG
 from .deep_poly import deep_poly
@@ -46,6 +47,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     alphas = ["min", "noisymin", "noisymin"]
     # The upper bounds we achieve with the three different strategies
     out_ubs: List[Optional[Tensor]] = [None for _ in alphas]
+    c2a_cache = ConvToAffineCache()
 
     # TODO: Arbitrary hyperparameters, further tuning is needed
     # Except when debugging there is no point in giving up early, since printing
@@ -72,7 +74,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 alpha = {k: (alpha[k] - learning_rate * alpha[k].grad).clamp(0, 1).detach().requires_grad_() for k in alpha.keys()}
                 dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds on backprop and updating.")
             st = datetime.now()
-            out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub)
+            out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub, c2a_cache)
             dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds running DeepPoly (one forward pass).")
             # TODO: Are we satisfied with a tie? Or do we need to be strictly better? Could be an (unlikely) error source
             remaining_labels = remaining_labels[out_ub > 0]
