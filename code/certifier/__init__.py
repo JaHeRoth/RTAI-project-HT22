@@ -77,14 +77,14 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
             out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub, c2a_cache)
             dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds running DeepPoly (one forward pass).")
             # TODO: Are we satisfied with a tie? Or do we need to be strictly better? Could be an (unlikely) error source
-            remaining_labels = remaining_labels[out_ub > 0]
+            remaining_labels = remaining_labels[out_ub >= 0]
             if len(remaining_labels) == 0:
                 # We ruled out all other categories, so we're done
                 dprint(f"Verified after {(datetime.now() - start_time).total_seconds()} seconds. "
                        f"[epoch: {epoch}; i: {i}; alpha: {alpha})]")
                 return True
             # TODO: Again maybe needs a change if we change the tie-breaking strategy
-            if out_ub.min() <= 0:
+            if out_ub.min() < 0:
                 # We found an alpha that ruled out at least one category, so we update the comparison layer
                 dprint(f"{len(remaining_labels)} categories left to beat: {remaining_labels}.")
                 # TODO?: Dumb idea, but is there anything in the comp graph of layers that we lose when we do this override?
