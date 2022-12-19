@@ -643,8 +643,8 @@ def test_deep_poly_resnet_identity_path_identity_after():
                                 # --------------------------------------------------------------------------------------------
                                 # FC layer -----------------------------------------------------------------------------------
                                 (torch.tensor([-3/16., -3/16.]), torch.tensor([1., 1.])), # This bound is tighter than what our algorithm gives -> bug?
-                                (torch.tensor([-171/160., -171/160.]), torch.tensor([19/16., 19/16.])),
-                                (torch.tensor([-361/160.]), torch.tensor([361/160.]))] 
+                                (torch.tensor([-27/160., -27/160.]), torch.tensor([1., 1.])),
+                                (torch.tensor([-187/160.]), torch.tensor([187/160.]))] 
     # Unroll the bounds given in added_bounds
     unrolled_bounds = []
     for bounds in added_bounds:
@@ -656,42 +656,6 @@ def test_deep_poly_resnet_identity_path_identity_after():
     
     # Check that the concrete bounds are correct for all layers
     for bounds, correct_bounds in zip(unrolled_bounds, correct_bounds_per_layer):
-        bounds = bounds[-2:]
-        lb, ub, correct_lb, correct_ub = bounds[0], bounds[1], correct_bounds[0], correct_bounds[1]
-        assert torch.allclose(lb, correct_lb)
-        assert torch.allclose(ub, correct_ub)
-
-
-def test_deep_poly_fc_forward_after_resnet():
-    # Check the fc_net after resnet isolated
-    fc_net = FullyConnected(4, [2, 1], act='relu')
-    # Set the weights and biases
-    fc_net.layers[0].weight = torch.nn.Parameter(torch.tensor([[1., -1., 0., 0.], [0., 0., -1., 1.]]))
-    fc_net.layers[0].bias = torch.nn.Parameter(torch.tensor([0., 0.]))
-    # Layer 1 is ReLU, so we don't need to set weights and biases
-    fc_net.layers[2].weight = torch.nn.Parameter(torch.tensor([[-1., 1.]]))
-    fc_net.layers[2].bias = torch.nn.Parameter(torch.tensor([0.]))
-    # Needed for deep_poly implementation
-    layer = fc_net.layers
-    # Input "image"
-    x = torch.tensor([0., 0., 0., 0.])
-    # Input region
-    epsilon = 1.
-    lb = x - epsilon
-    ub = x + epsilon
-    # We initialize the alphas for the ReLU layers
-    alphas = {1: torch.tensor([0.5, 0.5])}
-
-    # Check that the forward pass is correct
-    # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
-    # MVP check that output bound is correct at least
-    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub)
-    # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
-    correct_bounds_per_layer = [(torch.tensor([-2., -2.]), torch.tensor([2., 2.])), 
-                                (torch.tensor([-1., -1.]), torch.tensor([2., 2.])), 
-                                (torch.tensor([-3.]), torch.tensor([3.]))]
-    # Check that the concrete bounds are correct for all layers
-    for bounds, correct_bounds in zip(added_bounds, correct_bounds_per_layer):
         bounds = bounds[-2:]
         lb, ub, correct_lb, correct_ub = bounds[0], bounds[1], correct_bounds[0], correct_bounds[1]
         assert torch.allclose(lb, correct_lb)
