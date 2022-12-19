@@ -5,7 +5,7 @@ from torch.nn import Sequential
 
 from verifier import conv_to_affine, get_net, deep_poly
 from networks import Conv as ConvNet
-from dummy_networks import FullyConnected, Conv, UnnormalizedResnet
+from dummy_networks import FullyConnected, Conv, ResNet, BasicBlock
 
 """
 Test suite:
@@ -453,8 +453,75 @@ def test_deep_poly_resnet():
     # Iff there is time, use a conv layer and relu before basic block
     # 1 basic block, 1 path identity, 1 path conv without batch norm
     # Addition of the two paths, ReLU, FC layer to output
+    net = ResNet(BasicBlock, in_dim=2, num_stages=1, in_ch=1, num_blocks=1, num_classes=1, in_planes=1, bn=False, stride=[1, 1], last_layer="dense")
+    flat_net = Sequential(*itertools.chain.from_iterable([(layer if type(layer) is Sequential else [layer]) for layer in net]))
+    
+    # Set the weights and biases
+    flat_net[0].weight = torch.nn.Parameter(torch.tensor([[[[0., 0., 0.], [0., 1., 0.], [0., 0., 0.]]]]))
+    flat_net[0].bias = torch.nn.Parameter(torch.tensor([0.]))
+    # Basic block
+    flat_net[2].path_b[0].weight = torch.nn.Parameter(torch.tensor([[[[0., 0., 0.], [0., 1., 0.], [0., 0., 0.]]]]))
+    flat_net[2].path_b[0].bias = torch.nn.Parameter(torch.tensor([0.]))
+    flat_net[2].path_b[2].weight = torch.nn.Parameter(torch.tensor([[[[0., 1., 0.], [1., -1., 1.], [0., 1., 0.]]]]))
+    flat_net[2].path_b[2].bias = torch.nn.Parameter(torch.tensor([0.]))
 
-    assert False
+    flat_net[5].weight = torch.nn.Parameter(torch.tensor([[1., -1., 0., 0.], [0., 0., -1., 1.]]))
+    flat_net[5].bias = torch.nn.Parameter(torch.tensor([0., 0.]))
+    flat_net[7].weight = torch.nn.Parameter(torch.tensor([[-1., 1.]]))
+    flat_net[7].bias = torch.nn.Parameter(torch.tensor([0.]))
+    
+    # Input "image"
+    x = torch.tensor([[[[0., 0.], 
+                        [0., 0.]]]])
+    # Input region
+    epsilon = 1.
+    lb = x - epsilon
+    ub = x + epsilon
+    # We initialize the alphas for the ReLU layers
+    alphas = {1: torch.tensor([0.25, 0.25, 0.25, 0.25]).requires_grad_(), 
+              '2b1': torch.tensor([0.5, 0.5, 0.5, 0.5]).requires_grad_(),
+              3: torch.tensor([0.75, 0.75, 0.75, 0.75]).requires_grad_(),
+              6: torch.tensor([0.9, 0.9]).requires_grad_()}
+    # alphas = 'min'
+
+    # Check that the forward pass is correct
+    # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
+    # MVP check that output bound is correct at least
+    output_ub, out_alpha, added_bounds = deep_poly(flat_net, alphas, lb, ub)
+    # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
+    correct_bounds_per_layer = [# Conv layer ---------------------------------------------------------------------------------
+                                (torch.tensor([-1., -1., -1., -1.]), torch.tensor([1., 1., 1., 1.])),
+                                # ReLU layer ---------------------------------------------------------------------------------
+                                (torch.tensor([-1/4., -1/4., -1/4., -1/4.]), torch.tensor([1., 1., 1., 1.])),
+                                # Basic block --------------------------------------------------------------------------------
+                                # Path b of resnet ---------------------------------------------------------------------------
+                                (torch.tensor([-1/4., -1/4., -1/4., -1/4.]), torch.tensor([1., 1., 1., 1.])),
+                                (torch.tensor([-1/8., -1/8., -1/8., -1/8.]), torch.tensor([1., 1., 1., 1.])),
+                                (torch.tensor([-10/8., -10/8., -10/8., -10/8.]), torch.tensor([17/8., 17/8., 17/8., 17/8.])), 
+                                # --------------------------------------------------------------------------------------------
+                                # Addition within resnet ---------------------------------------------------------------------
+                                (torch.tensor([-1/2., -1/2., -1/2., -1/2.]), torch.tensor([5/2., 5/2., 5/2., 5/2.])),
+                                # --------------------------------------------------------------------------------------------
+                                # ReLU ---------------------------------------------------------------------------------------
+                                (torch.tensor([-3/8., -3/8., -3/8., -3/8.]), torch.tensor([5/2., 5/2., 5/2., 5/2.])),
+                                # --------------------------------------------------------------------------------------------
+                                # FC layer -----------------------------------------------------------------------------------
+                                (torch.tensor([-71/32., -71/32.]), torch.tensor([71/32., 71/32.]))] # This bound is tighter than what our algorithm gives -> bug?
+    # Unroll the bounds given in added_bounds
+    unrolled_bounds = []
+    for bounds in added_bounds:
+        if type(bounds) is dict:
+            unrolled_bounds += bounds['b']
+            unrolled_bounds.append((bounds['lb'], bounds['ub']))
+        else:
+            unrolled_bounds.append(bounds)
+    
+    # Check that the concrete bounds are correct for all layers
+    for bounds, correct_bounds in zip(unrolled_bounds, correct_bounds_per_layer):
+        bounds = bounds[-2:]
+        lb, ub, correct_lb, correct_ub = bounds[0], bounds[1], correct_bounds[0], correct_bounds[1]
+        assert torch.allclose(lb, correct_lb)
+        assert torch.allclose(ub, correct_ub)
 
 
 def test_resnet_flattening():
@@ -474,7 +541,7 @@ def test_resnet_flattening():
 
 # To enable debugging the test cases
 def main():
-    test_resnet_flattening()
+    test_deep_poly_resnet()
 
 if __name__ == '__main__':
     main()
