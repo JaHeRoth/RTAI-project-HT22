@@ -45,15 +45,16 @@ def backtrack(direct_lb: Tensor, direct_ub: Tensor, past_bounds: Bounds):
             direct_lb = cased_mul_w_bias(direct_lb, abstract_lb, abstract_ub)
             direct_ub = cased_mul_w_bias(direct_ub, abstract_ub, abstract_lb)
         else:
-            # Adjust the bias in the direct bounds s.t. it doesn't get doubled by the later addition
+            # Must avoid double-counting the bias column of direct_lb, which is why
+            # it's excluded from the two calls to backtrack and reincluded at the end
             bias_lb, bias_ub = direct_lb[:, 0].clone(), direct_ub[:, 0].clone()
             direct_lb[:, 0] = 0
             direct_ub[:, 0] = 0
             direct_a_lb, direct_a_ub = backtrack(direct_lb, direct_ub, past_bound["a"])
             direct_b_lb, direct_b_ub = backtrack(direct_lb, direct_ub, past_bound["b"])
-            direct_a_lb[:, 0] += bias_lb
-            direct_a_ub[:, 0] += bias_ub
             direct_lb, direct_ub = direct_a_lb + direct_b_lb, direct_a_ub + direct_b_ub
+            direct_lb[:, 0] += bias_lb
+            direct_ub[:, 0] += bias_ub
     return direct_lb, direct_ub
 
 
