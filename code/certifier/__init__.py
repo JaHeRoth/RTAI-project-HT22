@@ -6,6 +6,7 @@ import torch
 from torch import Tensor
 from torch.nn import Sequential, ReLU, Linear
 
+from .cache import ConvToAffineCache
 from .networks import NormalizedResnet
 from .constants import DEBUG
 from .deep_poly import deep_poly
@@ -39,8 +40,9 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     start_time = datetime.now()
     remaining_labels = Tensor([c for c in range(net_layers[-1].out_features) if c != true_label]).long()
     layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
-    alphas = ["min", "noisymin", "noisymin"]
+    alphas = ["min", "smoothmin", "noisymin"]
     out_ubs: List[Optional[Tensor]] = [None for _ in alphas]
+    c2a_cache = ConvToAffineCache()
 
     # TODO: Arbitrary hyperparameters, further tuning is needed
     # Except when debugging there is no point in giving up early, since printing
@@ -60,16 +62,14 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 alpha = {k: (alpha[k] - learning_rate * alpha[k].grad).clamp(0, 1).detach().requires_grad_() for k in alpha.keys()}
                 dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds on backprop and updating.")
             st = datetime.now()
-            out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub)
+            out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub, c2a_cache)
             dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds running DeepPoly (one forward pass).")
-            # TODO: Are we satisfied with a tie? Or do we need to be strictly better? Could be an (unlikely) error source
-            remaining_labels = remaining_labels[out_ub > 0]
+            remaining_labels = remaining_labels[out_ub >= 0]
             if len(remaining_labels) == 0:
                 dprint(f"Verified after {(datetime.now() - start_time).total_seconds()} seconds. "
                        f"[epoch: {epoch}; i: {i}; alpha: {alpha})]")
                 return True
-            # TODO: Again maybe needs a change if we change the tie-breaking strategy
-            if out_ub.min() <= 0:
+            if out_ub.min() < 0:
                 dprint(f"{len(remaining_labels)} categories left to beat: {remaining_labels}.")
                 # TODO: Maybe kick winning ensemble member out and initialize a new one as soon as we beat a class
                 layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
