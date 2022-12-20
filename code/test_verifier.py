@@ -725,7 +725,16 @@ def test_resnet_flattening():
 #         ub = x + epsilon
 #         deep_poly(layers, 'min', lb, ub, c2a_cache)
 #         num_conv_layer = len([layer for layer in net.modules() if type(layer) is Conv2d])
-#         assert len(c2a_cache._cache) == num_conv_layer
+#         # unroll the c2a_cache for the resnets
+#         num_cached_conv_layers = len(c2a_cache)
+#         if network in ['net8', 'net9', 'net10']:
+#             num_cached_conv_layers = 0
+#             for key, value in c2a_cache.items():
+#                 if type(value) is dict:
+#                     num_cached_conv_layers += len(value['a']) + len(value['b'])
+#                 else:
+#                     num_cached_conv_layers += 1
+#         assert num_cached_conv_layers == num_conv_layer
     
 
 def test_no_grad():
