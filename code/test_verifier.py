@@ -6,7 +6,7 @@ from torch.nn import Sequential, Conv2d
 from verifier import get_net
 from certifier.deep_poly import conv_to_affine, deep_poly
 from certifier.networks import Conv as ConvNet
-from certifier.cache import ConvToAffineCache
+from certifier.constants import SequentialCache
 
 from dummy_networks import FullyConnected, Conv, ResNet, BasicBlock
 
@@ -179,8 +179,8 @@ def test_deep_poly_fc_forward_with_min_initialization_crossing():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(layer, alphas, lb, ub, c2a_cache)
     # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
     correct_bounds_per_layer = [(torch.tensor([-1., -3.]), torch.tensor([3., 1.])), (torch.tensor([-1., 0.]), torch.tensor([3., 1.])), (torch.tensor([-2.]), torch.tensor([2.5]))]
     # Check that the concrete bounds are correct for all layers
@@ -217,8 +217,8 @@ def test_deep_poly_fc_forward_with_fixed_alphas_crossing():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(layer, alphas, lb, ub, c2a_cache)
     # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
     correct_bounds_per_layer = [(torch.tensor([-1., -3.]), torch.tensor([3., 1.])), (torch.tensor([-0.5, -1.5]), torch.tensor([3., 1.])), (torch.tensor([-1.5]), torch.tensor([3.]))]
     # Check that the concrete bounds are correct for all layers
@@ -252,8 +252,8 @@ def test_deep_poly_fc_backward_gradient_crossing():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(layer, alphas, lb, ub, c2a_cache)
     
     # Calculate the gradients of the upper bound w.r.t. the alphas
     output_ub.backward()
@@ -285,8 +285,8 @@ def test_deep_poly_fc_forward_with_min_initialization_not_crossing_positive():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(layer, alphas, lb, ub, c2a_cache)
     # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
     correct_bounds_per_layer = [(torch.tensor([3., -3.]), torch.tensor([7., 1.])), (torch.tensor([3., 0.]), torch.tensor([7., 1.])), (torch.tensor([2.]), torch.tensor([6.5]))]
     # Check that the concrete bounds are correct for all layers
@@ -324,8 +324,8 @@ def test_deep_poly_fc_backward_gradient_not_crossing_positive():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(layer, alphas, lb, ub, c2a_cache)
     
     # Calculate the gradients of the upper bound w.r.t. the alphas
     output_ub.backward()
@@ -357,8 +357,8 @@ def test_deep_poly_fc_forward_with_min_initialization_not_crossing_negative():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(layer, alphas, lb, ub, c2a_cache)
     # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
     correct_bounds_per_layer = [(torch.tensor([-1., -7.]), torch.tensor([3., -3.])), (torch.tensor([-1., 0.]), torch.tensor([3., 0.])), (torch.tensor([-1.5]), torch.tensor([2.5]))]
     # Check that the concrete bounds are correct for all layers
@@ -396,8 +396,8 @@ def test_deep_poly_fc_backward_gradient_not_crossing_negative():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(layer, alphas, lb, ub, c2a_cache)
     
     # Calculate the gradients of the upper bound w.r.t. the alphas
     output_ub.backward()
@@ -433,8 +433,8 @@ def test_deep_poly_conv_without_batch_norm():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(layer, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(layer, alphas, lb, ub, c2a_cache)
     # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
     correct_bounds_per_layer = [(torch.tensor([-6., -3., -2., 2.]), torch.tensor([0., 3., 4., 8.])), 
                                 (torch.tensor([0., -1.5, -1., 2.]), torch.tensor([0., 3., 4., 8.])), 
@@ -493,8 +493,8 @@ def test_deep_poly_resnet_cancellation_between_and_within_paths():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(flat_net, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(flat_net, alphas, lb, ub, c2a_cache)
     # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
     correct_bounds_per_layer = [# Conv layer ---------------------------------------------------------------------------------
                                 (torch.tensor([-1., -1., -1., -1.]), torch.tensor([1., 1., 1., 1.])),
@@ -566,8 +566,8 @@ def test_deep_poly_resnet_identity_path():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(flat_net, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(flat_net, alphas, lb, ub, c2a_cache)
     # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
     correct_bounds_per_layer = [# Conv layer ---------------------------------------------------------------------------------
                                 (torch.tensor([-1., -1., -1., -1.]), torch.tensor([1., 1., 1., 1.])),
@@ -641,8 +641,8 @@ def test_deep_poly_resnet_identity_path_identity_after():
     # Check that the forward pass is correct
     # Check that added_bounds[:, -2:] is correct for all layers of the network (the concrete upper & lower bounds in added_bounds)
     # MVP check that output bound is correct at least
-    c2a_cache = ConvToAffineCache()
-    output_ub, out_alpha, added_bounds = deep_poly(flat_net, alphas, lb, ub, c2a_cache)
+    c2a_cache = {}
+    output_ub, out_alpha, added_bounds, c2a_cache = deep_poly(flat_net, alphas, lb, ub, c2a_cache)
     # Build the correct bounds, it's always [lb_node1, lb_node2], [ub_node1, ub_node2], etc.
     correct_bounds_per_layer = [# Conv layer ---------------------------------------------------------------------------------
                                 (torch.tensor([-1., -1., -1., -1.]), torch.tensor([1., 1., 1., 1.])),
@@ -715,8 +715,7 @@ def test_resnet_flattening():
 #             layers = Sequential(*itertools.chain.from_iterable([(layer if type(layer) is Sequential else [layer]) for layer in net.resnet]))
 #         else:
 #             layers = net.layers
-#         c2a_cache = ConvToAffineCache()
-#         c2a_cache._cache = {}
+#         c2a_cache = {}
 #         if 'mnist' in network_name:
 #             x = torch.rand(1, 1, 28, 28)
 #         else:
@@ -753,8 +752,7 @@ def test_no_grad():
             layers = Sequential(*itertools.chain.from_iterable([(layer if type(layer) is Sequential else [layer]) for layer in net.resnet]))
         else:
             layers = net.layers
-        c2a_cache = ConvToAffineCache()
-        c2a_cache._cache = {}
+        c2a_cache = {}
         if 'mnist' in network_name:
             x = torch.rand(1, 1, 28, 28)
         else:
@@ -762,8 +760,8 @@ def test_no_grad():
         epsilon = 0.
         lb = x - epsilon
         ub = x + epsilon
-        output_ub_1, out_alpha_1, _ = deep_poly(layers, 'min', lb, ub, c2a_cache, no_grad=False)
-        output_ub_2, out_alpha_2, _ = deep_poly(layers, 'min', lb, ub, c2a_cache, no_grad=True)
+        output_ub_1, out_alpha_1, _, _ = deep_poly(layers, 'min', lb, ub, c2a_cache, no_grad=False)
+        output_ub_2, out_alpha_2, _, _ = deep_poly(layers, 'min', lb, ub, c2a_cache, no_grad=True)
         # Somehow fails atm
         output_ub_1.backward()
         output_ub_2.backward()

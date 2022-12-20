@@ -2,17 +2,16 @@ import re
 from contextlib import nullcontext
 from datetime import datetime
 from itertools import product
-from typing import Optional, Union, List, Dict
+from typing import Optional, Union, List, Dict, Tuple
 
 import torch
 from torch import Tensor, Size
 from torch.nn import Conv2d, BatchNorm2d, Linear, Sequential, ReLU
 
-from .cache import ConvToAffineCache
 from .networks.resnet import BasicBlock
 from .logger import dprint
 from .bound_concretizer import concretize_bounds
-from .constants import Bounds, Alpha
+from .constants import Bounds, Alpha, BlockCache, SequentialCache
 
 
 def conv_to_affine(layer: Conv2d, in_height: int, in_width: int, bn_layer: BatchNorm2d = None):
@@ -73,22 +72,16 @@ def fc_bounds(layer: Linear, past_bounds: Bounds, input_lb: Tensor, input_ub: Te
     return affine_bounds(bias, weights, past_bounds, input_lb, input_ub, should_concretize)
 
 
-def caching_conv_to_affine(layer: Conv2d, in_height: int, in_width: int,
-                           bn_layer: Optional[BatchNorm2d], c2a_cache: ConvToAffineCache):
-    if c2a_cache.get(layer, in_height, in_width, bn_layer) is None:
-        c2a_cache.set(layer, in_height, in_width, bn_layer, conv_to_affine(layer, in_height, in_width, bn_layer))
-    return c2a_cache.get(layer, in_height, in_width, bn_layer)
-
-
 def conv_bounds(layer: Conv2d, past_bounds: Bounds, input_lb: Tensor, input_ub: Tensor, in_height: int, in_width: int,
-                bn_layer: Optional[BatchNorm2d], c2a_cache: ConvToAffineCache, should_concretize: bool):
+                bn_layer: Optional[BatchNorm2d], cached: Tuple[Tensor, Tensor], should_concretize: bool):
     """:return: Abstract and concrete upper and lower bounds of the convolutional layer `layer`
     and if applicable the batch normalization layer `bn_layer` directly following it, upon
     rewriting (and thus treating) both of these as a single fully connected layer."""
     st = datetime.now()
-    intercept, coefficients = caching_conv_to_affine(layer, in_height, in_width, bn_layer, c2a_cache)
-    dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds on caching_conv_to_affine.")
-    return affine_bounds(intercept, coefficients, past_bounds, input_lb, input_ub, should_concretize)
+    intercept, coefficients = conv_to_affine(layer, in_height, in_width, bn_layer) if cached is None else cached
+    dprint(f"Spent {(datetime.now()-st).total_seconds()} seconds on getting affine bounds for conv layer.")
+    return affine_bounds(intercept, coefficients, past_bounds,
+                         input_lb, input_ub, should_concretize), (intercept, coefficients)
 
 
 def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
@@ -187,7 +180,7 @@ def extract_path_alphas(alpha: Alpha, block_layer_number: int, path_name: str):
 
 
 def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Tensor, k: int,
-               alpha: Alpha, in_shape: Size, c2a_cache: ConvToAffineCache, no_grad: bool):
+               alpha: Alpha, in_shape: Size, c2a_cache: BlockCache, no_grad: bool):
     """
     Call deep_poly for both paths of the BasicBlock `layer`, combining the resulting abstract bounds and
     computing the concrete output bounds using that combination.
@@ -206,8 +199,8 @@ def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Te
     """
     # TODO: Bugfix: concrete bounds blow up in the conv layers of path_b of the last basic block (k=8) of net10
     a_alphas, b_alphas = extract_path_alphas(alpha, k, "a"), extract_path_alphas(alpha, k, "b")
-    _, out_a_alphas, a_bounds = deep_poly(layer.path_a, a_alphas, input_lb, input_ub, c2a_cache, bounds, in_shape)
-    _, out_b_alphas, b_bounds = deep_poly(layer.path_b, b_alphas, input_lb, input_ub, c2a_cache, bounds, in_shape)
+    _, out_a_alphas, a_bounds, c2a_cache["a"] = deep_poly(layer.path_a, a_alphas, input_lb, input_ub, c2a_cache["a"], bounds, in_shape)
+    _, out_b_alphas, b_bounds, c2a_cache["b"] = deep_poly(layer.path_b, b_alphas, input_lb, input_ub, c2a_cache["b"], bounds, in_shape)
     block_bounds = {"a": a_bounds, "b": b_bounds}
     block_alphas = {**{f"{k}a{key}": value for key, value in out_a_alphas.items()},
                     **{f"{k}b{key}": value for key, value in out_b_alphas.items()}}
@@ -217,10 +210,10 @@ def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Te
     with torch.no_grad() if no_grad else nullcontext():
         concrete_lb, concrete_ub = concretize_bounds(identity, identity, bounds_with_block, input_lb, input_ub)
     block_bounds["lb"], block_bounds["ub"] = concrete_lb, concrete_ub
-    return block_bounds, block_alphas
+    return block_bounds, block_alphas, c2a_cache
 
 
-def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, c2a_cache: ConvToAffineCache, in_bounds=None, in_shape=None, no_grad=True):
+def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, c2a_cache: SequentialCache, in_bounds=None, in_shape=None, no_grad=True):
     """
     :param layers: The sequential network (list of layers) we intend to verify.
     :param alpha: The alpha values to use for all ReLU nodes (more specifically: a dictionary mapping
@@ -262,18 +255,21 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             in_height, in_width = in_shapes[k][-2:]
             # Consecutive pair of Conv, BatchNorm layers is treated as a single affine layer
             bn_layer = layers[k+1] if len(layers) > k + 1 and type(layers[k+1]) == BatchNorm2d else None
+            cached = c2a_cache[k] if k in c2a_cache.keys() else None
             # Last layer of each path in BasicBlock is followed by an aggregation layer between these paths,
             # thus its concrete bounds aren't used, thus shouldn't be computed (to save time)
             should_concretize = not (is_nested and (
                     (bn_layer is None and k == len(layers) - 1) or (bn_layer is not None and k == len(layers) - 2)))
             with torch.no_grad() if no_grad else nullcontext():
-                bounds.append(conv_bounds(
-                    layer, bounds, src_lb, src_ub, in_height, in_width, bn_layer, c2a_cache, should_concretize))
+                bound, c2a_cache[k] = conv_bounds(
+                    layer, bounds, src_lb, src_ub, in_height, in_width, bn_layer, cached, should_concretize)
+            bounds.append(bound)
         elif type(layer) == ReLU:
             bound, out_alpha[k] = relu_bounds(bounds, alpha[k] if type(alpha) == dict else alpha)
             bounds.append(bound)
         elif type(layer) == BasicBlock:
-            block_bounds, block_alphas = res_bounds(layer, bounds, src_lb, src_ub, k, alpha, in_shapes[k], c2a_cache, no_grad)
+            cached = c2a_cache[k] if k in c2a_cache.keys() else {"a": {}, "b": {}}
+            block_bounds, block_alphas, c2a_cache[k] = res_bounds(layer, bounds, src_lb, src_ub, k, alpha, in_shapes[k], cached, no_grad)
             out_alpha.update(block_alphas)
             bounds.append(block_bounds)
         dprint(f"Layer {k} of type {type(layer)} took {(datetime.now()-st).total_seconds()} seconds.")
@@ -281,4 +277,4 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
     output_ub = bounds[-1][3]
     # Return all the newly added abstract and concrete bounds as well
     added_bounds = bounds if in_bounds is None else bounds[len(in_bounds):]
-    return output_ub, out_alpha, added_bounds
+    return output_ub, out_alpha, added_bounds, c2a_cache

@@ -6,7 +6,6 @@ import torch
 from torch import Tensor
 from torch.nn import Sequential, ReLU, Linear
 
-from .cache import ConvToAffineCache
 from .networks import NormalizedResnet
 from .constants import DEBUG
 from .deep_poly import deep_poly
@@ -42,7 +41,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
     alphas = ["min", "smoothmin", "noisymin"]
     out_ubs: List[Optional[Tensor]] = [None for _ in alphas]
-    c2a_cache = ConvToAffineCache()
+    c2a_cache = {}
 
     # TODO: Arbitrary hyperparameters, further tuning is needed
     # Except when debugging there is no point in giving up early, since printing
@@ -59,10 +58,10 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 old_ub[0].backward()
                 # Gradient descent step
                 # TODO: Refactor to use an optimizer if possible
-                alpha = {k: (alpha[k] - learning_rate * alpha[k].grad).clamp(0, 1).detach().requires_grad_() for k in alpha.keys()}
+                alpha = {k: (ten - learning_rate * ten.grad).clamp(0, 1).detach().requires_grad_() for k, ten in alpha.items()}
                 dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds on backprop and updating.")
             st = datetime.now()
-            out_ub, out_alpha, _ = deep_poly(layers, alpha, input_lb, input_ub, c2a_cache)
+            out_ub, out_alpha, _, c2a_cache = deep_poly(layers, alpha, input_lb, input_ub, c2a_cache)
             dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds running DeepPoly (one forward pass).")
             remaining_labels = remaining_labels[out_ub >= 0]
             if len(remaining_labels) == 0:
