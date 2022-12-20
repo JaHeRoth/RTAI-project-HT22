@@ -766,15 +766,17 @@ def test_no_grad():
             x = torch.rand(1, 1, 28, 28)
         else:
             x = torch.rand(1, 3, 32, 32)
-        epsilon = 0.
+        epsilon = 1.
         lb = x - epsilon
         ub = x + epsilon
         output_ub_1, out_alpha_1, _, _ = deep_poly(layers, 'min', lb, ub, c2a_cache, no_grad=False)
         output_ub_2, out_alpha_2, _, _ = deep_poly(layers, 'min', lb, ub, c2a_cache, no_grad=True)
         # Somehow fails atm
-        output_ub_1.backward()
-        output_ub_2.backward()
+        output_ub_1[0].backward()
+        output_ub_2[0].backward()
         # Check that all the alpha gradients are the same
+        for alpha_1, alpha_2 in zip(out_alpha_1.values(), out_alpha_2.values()):
+            assert torch.allclose(alpha_1.grad, alpha_2.grad)
         
     assert False
 
