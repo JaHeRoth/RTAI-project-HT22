@@ -187,7 +187,7 @@ def extract_path_alphas(alpha: Alpha, block_layer_number: int, path_name: str):
 
 
 def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Tensor, k: int,
-               alpha: Alpha, in_shape: Size, c2a_cache: ConvToAffineCache):
+               alpha: Alpha, in_shape: Size, c2a_cache: ConvToAffineCache, no_grad: bool):
     """
     Call deep_poly for both paths of the BasicBlock `layer`, combining the resulting abstract bounds and
     computing the concrete output bounds using that combination.
@@ -214,13 +214,13 @@ def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Te
     out_len = len(b_bounds[-1][0])
     identity = torch.hstack([torch.zeros(out_len, 1), torch.eye(out_len)])
     bounds_with_block = [*bounds, block_bounds]
-    with torch.no_grad():
+    with torch.no_grad() if no_grad else nullcontext():
         concrete_lb, concrete_ub = concretize_bounds(identity, identity, bounds_with_block, input_lb, input_ub)
     block_bounds["lb"], block_bounds["ub"] = concrete_lb, concrete_ub
     return block_bounds, block_alphas
 
 
-def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, c2a_cache: ConvToAffineCache, in_bounds=None, in_shape=None):
+def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, c2a_cache: ConvToAffineCache, in_bounds=None, in_shape=None, no_grad=True):
     """
     :param layers: The sequential network (list of layers) we intend to verify.
     :param alpha: The alpha values to use for all ReLU nodes (more specifically: a dictionary mapping
@@ -256,7 +256,7 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             # BasicBlocks have no Linear layers, so can assume is_nested=False
             should_concretize = k != len(layers) - 2
             needs_grad = k == len(layers) - 1
-            with torch.no_grad() if not needs_grad else nullcontext():
+            with torch.no_grad() if not needs_grad and no_grad else nullcontext():
                 bounds.append(fc_bounds(layer, bounds, src_lb, src_ub, should_concretize))
         elif type(layer) == Conv2d:
             in_height, in_width = in_shapes[k][-2:]
@@ -266,14 +266,14 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             # thus its concrete bounds aren't used, thus shouldn't be computed (to save time)
             should_concretize = not (is_nested and (
                     (bn_layer is None and k == len(layers) - 1) or (bn_layer is not None and k == len(layers) - 2)))
-            with torch.no_grad():
+            with torch.no_grad() if no_grad else nullcontext():
                 bounds.append(conv_bounds(
                     layer, bounds, src_lb, src_ub, in_height, in_width, bn_layer, c2a_cache, should_concretize))
         elif type(layer) == ReLU:
             bound, out_alpha[k] = relu_bounds(bounds, alpha[k] if type(alpha) == dict else alpha)
             bounds.append(bound)
         elif type(layer) == BasicBlock:
-            block_bounds, block_alphas = res_bounds(layer, bounds, src_lb, src_ub, k, alpha, in_shapes[k], c2a_cache)
+            block_bounds, block_alphas = res_bounds(layer, bounds, src_lb, src_ub, k, alpha, in_shapes[k], c2a_cache, no_grad)
             out_alpha.update(block_alphas)
             bounds.append(block_bounds)
         dprint(f"Layer {k} of type {type(layer)} took {(datetime.now()-st).total_seconds()} seconds.")

@@ -729,10 +729,51 @@ def test_resnet_flattening():
 #         assert len(c2a_cache._cache) == num_conv_layer
     
 
+def test_no_grad():
+    # Load one of the networks
+    # Change deep_poly to also take in no_grad True or false
+    # Check that the gradients computed after deep_poly stay the same with no_grad True
+
+    # load the different networks, run them on a random input and check the length of the cache
+    # should equal the number of conv layers in the network
+    networks = ['net1', 'net2', 'net3', 'net4', 'net5', 'net6', 'net7', 'net8', 'net9', 'net10']
+    network_names = ['net1_mnist_fc1.pt',
+                        'net2_mnist_fc2.pt',
+                        'net3_cifar10_fc3.pt',
+                        'net4_mnist_conv1.pt',
+                        'net5_mnist_conv2.pt',
+                        'net6_cifar10_conv2.pt',
+                        'net7_mnist_conv3.pt',
+                        'net8_cifar10_resnet_2b.pt',
+                        'net9_cifar10_resnet_2b2_bn.pt',
+                        'net10_cifar10_resnet_4b.pt']
+    for network, network_name in zip(networks, network_names):
+        net = get_net(network, network_name)
+        if network in ['net8', 'net9', 'net10']:
+            layers = Sequential(*itertools.chain.from_iterable([(layer if type(layer) is Sequential else [layer]) for layer in net.resnet]))
+        else:
+            layers = net.layers
+        c2a_cache = ConvToAffineCache()
+        c2a_cache._cache = {}
+        if 'mnist' in network_name:
+            x = torch.rand(1, 1, 28, 28)
+        else:
+            x = torch.rand(1, 3, 32, 32)
+        epsilon = 0.
+        lb = x - epsilon
+        ub = x + epsilon
+        output_ub_1, out_alpha_1, _ = deep_poly(layers, 'min', lb, ub, c2a_cache, no_grad=False)
+        output_ub_2, out_alpha_2, _ = deep_poly(layers, 'min', lb, ub, c2a_cache, no_grad=True)
+        # Somehow fails atm
+        output_ub_1.backward()
+        output_ub_2.backward()
+        # Check that all the alpha gradients are the same
+        
+    assert False
 
 # To enable debugging the test cases
 def main():
-    test_resnet_flattening()
+    test_no_grad()
 
 if __name__ == '__main__':
     main()
