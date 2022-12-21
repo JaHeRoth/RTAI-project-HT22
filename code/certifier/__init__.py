@@ -48,7 +48,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     start_time = datetime.now()
     remaining_labels = Tensor([c for c in range(net_layers[-1].out_features) if c != true_label]).long()
     layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
-    alphas = ["min"]
+    alphas = ["min", "noisymin", "noisymin"]
     out_ubs: List[Optional[Tensor]] = [None for _ in alphas]
     c2a_cache = {}
 
