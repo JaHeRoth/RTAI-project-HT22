@@ -80,8 +80,10 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 return True
             if out_ub.min() < 0:
                 dprint(f"{len(remaining_labels)} categories left to beat: {remaining_labels}.")
-                # TODO: Maybe kick winning ensemble member out and initialize a new one as soon as we beat a class
                 layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
+                # As fewer classes now remain, we re-init the alpha furthest from beating one of these (evolution step)
+                min_losses = Tensor([out_ub[out_ub >= 0].min() for out_ub in out_ubs])
+                alphas[torch.argmax(min_losses)] = "noisymin"
             out_ubs[i], alphas[i] = out_ub, out_alpha
             # Estimates whether we can reach `desired_iter` number of epochs within the one minute we have
             # if we add another alpha, and if so adds it
@@ -90,10 +92,6 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 alphas.append(choose_alpha(i))
                 out_ubs.append(None)
         dprint(f"out_ubs after epoch {epoch}: {[out_ub.detach().numpy() for out_ub in out_ubs]}")
-        # Do a little bit of evolution, i.e. mutate the worst performing alpha after some epochs
-        if epoch % evolution_period == 0 and epoch > 0:
-            total_losses = Tensor([ReLU()(out_ub).sum() for out_ub in out_ubs])
-            alphas[torch.argmax(total_losses)] = "noisymin"
     dprint(f"Failed to verify after {(datetime.now() - start_time).total_seconds()} seconds and {max_iter} epochs.")
     return False
 
