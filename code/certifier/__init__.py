@@ -1,4 +1,5 @@
 import itertools
+import math
 from datetime import datetime
 from typing import List, Optional
 
@@ -51,13 +52,12 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     out_ubs: List[Optional[Tensor]] = [None for _ in alphas]
     c2a_cache = {}
 
-    # TODO: Arbitrary hyperparameters, further tuning is needed
     # Except when debugging there is no point in giving up early, since printing
     # "not verified" gives 0 points, just like timing out does
     desired_iter = 15
     max_iter = (desired_iter + 1) if DEBUG else 10 ** 9
     no_grad = False
-    learning_rate = 10**0
+    learning_rate = 5
     seconds_per_epoch = 60 / desired_iter
     for epoch in range(max_iter):
         epoch_start = datetime.now()
@@ -68,7 +68,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 # We want each alpha to focus its optimization on the class it's the closest to beating
                 old_ub[old_ub.argmin()].backward()
                 # Gradient descent step
-                alpha = {k: (ten - learning_rate * ten.grad).clamp(0, 1).detach().requires_grad_() for k, ten in alpha.items()}
+                alpha = {k: (ten - learning_rate / math.sqrt(epoch + 1) * ten.grad).clamp(0, 1).detach().requires_grad_() for k, ten in alpha.items()}
                 dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds on backprop and updating.")
             st = datetime.now()
             out_ub, out_alpha, _, c2a_cache = deep_poly(layers, alpha, input_lb, input_ub, c2a_cache, no_grad=no_grad)
