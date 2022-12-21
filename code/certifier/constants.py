@@ -9,4 +9,4 @@ BlockCache = Dict[str, Dict[int, Tuple[Tensor, Tensor]]]
 SequentialCache = Dict[int, Union[Tuple[Tensor, Tensor], BlockCache]]
 
 DEBUG = True
-VERBOSE = False
+VERBOSE = True

@@ -4,7 +4,7 @@ from typing import List, Optional
 
 import torch
 from torch import Tensor
-from torch.nn import Sequential, ReLU, Linear
+from torch.nn import Sequential, Linear
 
 from .networks import NormalizedResnet
 from .constants import DEBUG
@@ -54,13 +54,13 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     # TODO: Arbitrary hyperparameters, further tuning is needed
     # Except when debugging there is no point in giving up early, since printing
     # "not verified" gives 0 points, just like timing out does
-    max_iter = 10 if DEBUG else 10 ** 9
     desired_iter = 15
+    max_iter = (desired_iter + 1) if DEBUG else 10 ** 9
     no_grad = False
     learning_rate = 10**0
     seconds_per_epoch = 60 / desired_iter
     for epoch in range(max_iter):
-        # TODO: Make the ensembling dynamic and change up the last comparison layer for different comparisons
+        epoch_start = datetime.now()
         for i, (old_ub, alpha) in enumerate(zip(out_ubs, alphas)):
             # After the first epoch, we initialized the alphas for each strategy and do a Gradient Descent step
             if type(alpha) is not str:
@@ -90,8 +90,8 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 min_losses = Tensor([ub.min() for ub in out_ubs])
                 alphas[min_losses.argmax()] = "noisymin"
             # Estimates whether we can reach `desired_iter` number of epochs within the one minute we have
-            # if we add another alpha, and if so adds it
-            if epoch == 0 and (datetime.now() - start_time).total_seconds() * (1 if no_grad else 1.5) * (
+            # if we add another alpha, and if so adds it. epoch 0 is a bit special, so we wait till epoch 1
+            if epoch == 1 and (datetime.now() - epoch_start).total_seconds() * (
                     len(alphas) + 1) / len(alphas) < seconds_per_epoch:
                 alphas.append(choose_alpha(i))
                 out_ubs.append(None)
