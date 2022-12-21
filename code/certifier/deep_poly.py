@@ -98,6 +98,12 @@ def generate_alpha(in_lb: Tensor, in_ub: Tensor, strategy: str):
         min_scale = 0.5
         random_scales = min_scale + torch.rand(in_lb.shape) * (1 - min_scale)
         return 1 / 2 + ((in_ub > -in_lb).float() - 1 / 2) * random_scales
+    elif strategy == "gaussmin":
+        top_5_percent_quantile = 0.25
+        from torch.distributions import Normal
+        min_alphas = generate_alpha(in_lb, in_ub, strategy="min")
+        return min_alphas - Normal(torch.zeros(in_lb.shape),
+                                   top_5_percent_quantile / 2).sample().abs() * (2 * min_alphas - 1)
     elif strategy == "smoothmin":
         # Like min, but with a smooth transition between 0 and 1, to reflect difference in area
         # being small when in_ub and -in_lb are almost the same

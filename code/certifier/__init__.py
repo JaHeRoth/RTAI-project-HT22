@@ -29,12 +29,11 @@ def with_comparison_layer(net_layers: Sequential, true_label: int, adversarial_l
 
 
 def choose_alpha(index: int):
-    if index < 2:
-        return "noisymin"
     if index == 2:
         return "smoothmin"
-    else:
-        return "noisymin"
+    elif index % 2:
+        return "gaussmin"
+    return "noisymin"
 
 
 def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int):
