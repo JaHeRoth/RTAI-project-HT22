@@ -72,9 +72,11 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 alpha = {k: (ten - learning_rate * ten.grad).clamp(0, 1).detach().requires_grad_() for k, ten in alpha.items()}
                 dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds on backprop and updating.")
             st = datetime.now()
-            out_ub, out_alpha, _, c2a_cache = deep_poly(layers, alpha, input_lb, input_ub, c2a_cache, no_grad)
+            out_ub, out_alpha, _, c2a_cache = deep_poly(layers, alpha, input_lb, input_ub, c2a_cache, no_grad=no_grad)
             dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds running DeepPoly (one forward pass).")
-            remaining_labels = remaining_labels[out_ub >= 0]
+            out_ubs[i], alphas[i] = out_ub, out_alpha
+            should_remain = out_ub >= 0
+            remaining_labels = remaining_labels[should_remain]
             if len(remaining_labels) == 0:
                 dprint(f"Verified after {(datetime.now() - start_time).total_seconds()} seconds. "
                        f"[epoch: {epoch}; i: {i}; alpha: {alpha})]")
@@ -82,13 +84,12 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
             if out_ub.min() < 0:
                 dprint(f"{len(remaining_labels)} categories left to beat: {remaining_labels}.")
                 layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
-                # As fewer classes now remain, we re-init the alpha furthest from beating one of these (evolution step)
-                min_losses = Tensor([out_ub[out_ub >= 0].min() for out_ub in out_ubs])
-                alphas[min_losses.argmax()] = "noisymin"
-                # We want out_ubs to only contain bounds for remaining classes, so that we can argmin to choose target
+                # We want out_ubs to only contain bounds for remaining classes, as only these are relevant
                 for j in range(i+1):
-                    out_ubs[j] = out_ubs[j][out_ub >= 0]
-            out_ubs[i], alphas[i] = out_ub, out_alpha
+                    out_ubs[j] = out_ubs[j][should_remain]
+                # As fewer classes now remain, we re-init the alpha furthest from beating one of these (evolution step)
+                min_losses = Tensor([ub.min() for ub in out_ubs])
+                alphas[min_losses.argmax()] = "noisymin"
             # Estimates whether we can reach `desired_iter` number of epochs within the one minute we have
             # if we add another alpha, and if so adds it
             if epoch == 0 and (datetime.now() - start_time).total_seconds() * (1 if no_grad else 1.5) * (
