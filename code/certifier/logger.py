@@ -1,4 +1,4 @@
-from .constants import DEBUG
+from .constants import DEBUG, VERBOSE
 
 
 def print_if(msg: str, condition: bool):
@@ -9,4 +9,4 @@ def print_if(msg: str, condition: bool):
 
 def dprint(msg: str):
     """Print `msg` if `DEBUG` is True."""
-    print_if(msg, DEBUG)
+    print_if(msg, DEBUG and VERBOSE)
