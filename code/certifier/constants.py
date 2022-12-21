@@ -8,5 +8,5 @@ Alpha = Union[str, Dict[Union[str, int], Tensor]]
 BlockCache = Dict[str, Dict[int, Tuple[Tensor, Tensor]]]
 SequentialCache = Dict[int, Union[Tuple[Tensor, Tensor], BlockCache]]
 
-DEBUG = True
-VERBOSE = True
+DEBUG = False
+VERBOSE = False
