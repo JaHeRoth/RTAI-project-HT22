@@ -57,7 +57,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     # "not verified" gives 0 points, just like timing out does
     max_iter = 10 if DEBUG else 10 ** 9
     desired_iter = 15
-    no_grad = True
+    no_grad = False
     learning_rate = 10**0
     seconds_per_epoch = 60 / desired_iter
     for epoch in range(max_iter):
@@ -66,7 +66,8 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
             # After the first epoch, we initialized the alphas for each strategy and do a Gradient Descent step
             if type(alpha) is not str:
                 st = datetime.now()
-                old_ub[0].backward()
+                # We want each alpha to focus its optimization on the class it's the closest to beating
+                old_ub[old_ub.argmin()].backward()
                 # Gradient descent step
                 alpha = {k: (ten - learning_rate * ten.grad).clamp(0, 1).detach().requires_grad_() for k, ten in alpha.items()}
                 dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds on backprop and updating.")
@@ -83,7 +84,10 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
                 # As fewer classes now remain, we re-init the alpha furthest from beating one of these (evolution step)
                 min_losses = Tensor([out_ub[out_ub >= 0].min() for out_ub in out_ubs])
-                alphas[torch.argmax(min_losses)] = "noisymin"
+                alphas[min_losses.argmax()] = "noisymin"
+                # We want out_ubs to only contain bounds for remaining classes, so that we can argmin to choose target
+                for j in range(i+1):
+                    out_ubs[j] = out_ubs[j][out_ub >= 0]
             out_ubs[i], alphas[i] = out_ub, out_alpha
             # Estimates whether we can reach `desired_iter` number of epochs within the one minute we have
             # if we add another alpha, and if so adds it
