@@ -28,6 +28,15 @@ def with_comparison_layer(net_layers: Sequential, true_label: int, adversarial_l
     return Sequential(*net_layers, comparison_layer)
 
 
+def choose_alpha(index: int):
+    if index < 2:
+        return "noisymin"
+    if index == 2:
+        return "smoothmin"
+    else:
+        return "noisymin"
+
+
 def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, true_label: int):
     """
     Optimize multiple combinations of alphas simultaenously to allow DeepPoly to rule out all
@@ -39,7 +48,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     start_time = datetime.now()
     remaining_labels = Tensor([c for c in range(net_layers[-1].out_features) if c != true_label]).long()
     layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
-    alphas = ["min", "smoothmin", "noisymin"]
+    alphas = ["min"]
     out_ubs: List[Optional[Tensor]] = [None for _ in alphas]
     c2a_cache = {}
 
@@ -47,8 +56,10 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
     # Except when debugging there is no point in giving up early, since printing
     # "not verified" gives 0 points, just like timing out does
     max_iter = 10 if DEBUG else 10 ** 9
-    evolution_period = 5 if DEBUG else 10
+    desired_iter = 15
+    no_grad = True
     learning_rate = 10**0
+    seconds_per_epoch = 60 / desired_iter
     for epoch in range(max_iter):
         # TODO: Make the ensembling dynamic and change up the last comparison layer for different comparisons
         for i, (old_ub, alpha) in enumerate(zip(out_ubs, alphas)):
@@ -57,11 +68,10 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 st = datetime.now()
                 old_ub[0].backward()
                 # Gradient descent step
-                # TODO: Refactor to use an optimizer if possible
                 alpha = {k: (ten - learning_rate * ten.grad).clamp(0, 1).detach().requires_grad_() for k, ten in alpha.items()}
                 dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds on backprop and updating.")
             st = datetime.now()
-            out_ub, out_alpha, _, c2a_cache = deep_poly(layers, alpha, input_lb, input_ub, c2a_cache, no_grad=False)
+            out_ub, out_alpha, _, c2a_cache = deep_poly(layers, alpha, input_lb, input_ub, c2a_cache, no_grad)
             dprint(f"Spent {(datetime.now() - st).total_seconds()} seconds running DeepPoly (one forward pass).")
             remaining_labels = remaining_labels[out_ub >= 0]
             if len(remaining_labels) == 0:
@@ -73,6 +83,12 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 # TODO: Maybe kick winning ensemble member out and initialize a new one as soon as we beat a class
                 layers = with_comparison_layer(net_layers, true_label, adversarial_labels=remaining_labels)
             out_ubs[i], alphas[i] = out_ub, out_alpha
+            # Estimates whether we can reach `desired_iter` number of epochs within the one minute we have
+            # if we add another alpha, and if so adds it
+            if epoch == 0 and (datetime.now() - start_time).total_seconds() * (1 if no_grad else 1.5) * (
+                    len(alphas) + 1) / len(alphas) < seconds_per_epoch:
+                alphas.append(choose_alpha(i))
+                out_ubs.append(None)
         dprint(f"out_ubs after epoch {epoch}: {[out_ub.detach().numpy() for out_ub in out_ubs]}")
         # Do a little bit of evolution, i.e. mutate the worst performing alpha after some epochs
         if epoch % evolution_period == 0 and epoch > 0:
