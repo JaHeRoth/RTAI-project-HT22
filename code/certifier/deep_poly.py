@@ -115,7 +115,7 @@ def relu_bounds(past_bounds: Bounds, alpha: Union[Tensor, str]):
     else:
         prev_lb, prev_ub = past_bounds[-1][-2:]
     if type(alpha) == str:
-        alpha = generate_alpha(prev_lb, prev_ub, strategy=alpha).requires_grad_()
+        alpha = generate_alpha(prev_lb, prev_ub, strategy=alpha).detach().requires_grad_()
     in_len = len(prev_lb)
     lb_bias, ub_bias, lb_scaling, ub_scaling = [torch.zeros(in_len) for _ in range(4)]
     lb_scaling[prev_lb >= 0], ub_scaling[prev_lb >= 0] = 1, 1
