@@ -203,7 +203,6 @@ def res_bounds(layer: BasicBlock, bounds: Bounds, input_lb: Tensor, input_ub: Te
     the index of the corresponding layer in that path (so e.g. "2b1" for a layer at index 1 of path b
     if `layer` has index 2).
     """
-    # TODO: Bugfix: concrete bounds blow up in the conv layers of path_b of the last basic block (k=8) of net10
     a_alphas, b_alphas = extract_path_alphas(alpha, k, "a"), extract_path_alphas(alpha, k, "b")
     _, out_a_alphas, a_bounds, c2a_cache["a"] = deep_poly(layer.path_a, a_alphas, input_lb, input_ub, c2a_cache["a"], bounds, in_shape)
     _, out_b_alphas, b_bounds, c2a_cache["b"] = deep_poly(layer.path_b, b_alphas, input_lb, input_ub, c2a_cache["b"], bounds, in_shape)
