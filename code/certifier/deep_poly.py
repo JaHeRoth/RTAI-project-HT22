@@ -249,7 +249,7 @@ def deep_poly(layers: Sequential, alpha: Alpha, src_lb: Tensor, src_ub: Tensor, 
             # BasicBlocks have no Linear layers, so can assume is_nested=False
             should_concretize = k != len(layers) - 2
             needs_grad = k == len(layers) - 1
-            with torch.no_grad() if not needs_grad and no_grad else nullcontext():
+            with torch.no_grad() if no_grad and not needs_grad else nullcontext():
                 bounds.append(fc_bounds(layer, bounds, src_lb, src_ub, should_concretize))
         elif type(layer) == Conv2d:
             in_height, in_width = in_shapes[k][-2:]
