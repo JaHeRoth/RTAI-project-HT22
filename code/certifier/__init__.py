@@ -87,7 +87,7 @@ def ensemble_poly(net_layers: Sequential, input_lb: Tensor, input_ub: Tensor, tr
                 for j in range(i+1):
                     out_ubs[j] = out_ubs[j][should_remain]
                 # As fewer classes now remain, we re-init the alpha furthest from beating one of these (evolution step)
-                min_losses = Tensor([ub.min() for ub in out_ubs])
+                min_losses = Tensor([ub.min() if ub is not None else float("inf") for ub in out_ubs])
                 alphas[min_losses.argmax()] = "noisymin"
             # Estimates whether we can reach `desired_iter` number of epochs within the one minute we have
             # if we add another alpha, and if so adds it. epoch 0 is a bit special, so we wait till epoch 1
